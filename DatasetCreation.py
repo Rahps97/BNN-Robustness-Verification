@@ -5,7 +5,7 @@ import os
 
 #Parameter
 batch_size_train = 64
-InputSize = 28
+InputSize = 5
 Downscale_batch_size = 100_000
 
 args.selected_targets = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
@@ -30,26 +30,26 @@ if args.use_adaptive and args.downscale:
 
 train_dataloader, test_dataloader = dataloaders(args)
 
-Datasize  = train_dataloader.dataset[0][0].shape
-Folder = f"Dataset/{InputSize}x{InputSize}"
-try:
-    os.makedirs(Folder)
-    print(f"Folder '{Folder}' created successfully!")
-except FileExistsError:
-    print(f"Folder '{Folder}' already exists!")
+# Datasize  = train_dataloader.dataset[0][0].shape
+# Folder = f"Dataset/{InputSize}x{InputSize}"
+# try:
+#     os.makedirs(Folder)
+#     print(f"Folder '{Folder}' created successfully!")
+# except FileExistsError:
+#     print(f"Folder '{Folder}' already exists!")
 
-torch.save(train_dataloader, Folder+"/Train.txt")
-torch.save(test_dataloader, Folder+"/Test.txt")
+# torch.save(train_dataloader, Folder+"/Train.txt")
+# torch.save(test_dataloader, Folder+"/Test.txt")
 
-print(len(train_dataloader.dataset))
-print(len(test_dataloader.dataset))
+# print(len(train_dataloader.dataset))
+# print(len(test_dataloader.dataset))
 
 
-file = open("/home/rahul/QABNN/Experiment/"+Folder+"/Info.txt", "w")
-file.write(f"Batch Size : {batch_size_train} \n" )
-file.write(f"Picture Size : {InputSize}x{InputSize} \n" )
-file.write(f"Data Size : {Datasize[0]} \n" )
-file.write(f"Shuffle : {args.shuffle} \n" )
-file.write(f"Remove Contracdicting : {args.remove_contradicting} \n" )
-file.write(f"Adpative : {args.use_adaptive}")
-file.close()
+# file = open("/home/rahul/QABNN/Experiment/"+Folder+"/Info.txt", "w")
+# file.write(f"Batch Size : {batch_size_train} \n" )
+# file.write(f"Picture Size : {InputSize}x{InputSize} \n" )
+# file.write(f"Data Size : {Datasize[0]} \n" )
+# file.write(f"Shuffle : {args.shuffle} \n" )
+# file.write(f"Remove Contracdicting : {args.remove_contradicting} \n" )
+# file.write(f"Adpative : {args.use_adaptive}")
+# file.close()
