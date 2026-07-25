@@ -109,7 +109,7 @@ for _ in list(qubonet.named_children()):
     name = name+f"x{a}"
 ResultFolder = f"TrainedNN/{InputSize}x{InputSize}/{name}/"
 
-qubonet.load_state_dict(torch.load(ResultFolder + f'{InputDataSize}.pth', weights_only=True))
+qubonet.load_state_dict(torch.load(ResultFolder + f'{InputDataSize}.pth', weights_only=True, map_location=device))
 qubonet.eval()
 
 args.pixels_to_perturb = list(
