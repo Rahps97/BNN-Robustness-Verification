@@ -25,15 +25,26 @@ if hasattr(sys.stdout, "reconfigure"):
 
 
 def get_idle_gpus(threshold_mb=500):
-    """Return list of GPU indices with memory usage less than 'threshold_mb'."""
-    result = subprocess.run(
-        ["nvidia-smi", "--query-gpu=index,memory.used", "--format=csv,noheader,nounits"],
-        capture_output=True, text=True
-    )
+    """Return list of GPU indices with memory usage less than 'threshold_mb'.
+
+    Returns an empty list when nvidia-smi is not installed or produces no
+    usable output (CPU-only or non-NVIDIA machines), so the caller can fall
+    back to the CPU instead of crashing.
+    """
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index,memory.used", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True
+        )
+    except OSError:
+        return []
 
     idle = []
     for line in result.stdout.strip().split("\n"):
-        idx, used = map(int, re.split(r",\s*", line))
+        try:
+            idx, used = map(int, re.split(r",\s*", line))
+        except ValueError:
+            continue
         if used < threshold_mb:
             idle.append(idx)
 
@@ -804,7 +815,8 @@ def _run_search_on_device(
     for round_idx in range(1, total_rounds + 1):
         log(f"\n=== Round {round_idx}/{total_rounds} ===")
 
-        gpu_id = int(device.split(":")[-1])
+        device_index = device.split(":")[-1]
+        gpu_id = int(device_index) if device_index.isdigit() else 0
         gpu_seed_base = seed_base + gpu_id * 100_000 + round_idx * 2_000_000
 
         # --- Run a local FEM parameter search block (BASELINE_ROUNDS) ---
@@ -938,6 +950,10 @@ if __name__ == "__main__":
     }
 
     devices = [f"cuda:{i}" for i in get_idle_gpus()][:2]
+    if not devices:
+        # No idle NVIDIA GPU (or no nvidia-smi at all): run a single CPU worker.
+        print("[FEM] No idle CUDA device found; falling back to CPU.")
+        devices = ["cpu"]
     total_rounds = 4000
     SYNC_INTERVAL = 2000
     EARLY_STOP_MARGIN = 0.30
