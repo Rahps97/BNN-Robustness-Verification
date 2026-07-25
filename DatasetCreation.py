@@ -28,18 +28,44 @@ if args.use_adaptive and args.downscale:
     args.shape_2d = (args.adaptive_avg_pool_shape, args.adaptive_avg_pool_shape) 
 
 
+#Overwrite protection
+# The repository ships a dataset for each image size, and every Info.txt and
+# every QUBO was generated from those exact files. Regenerating the dataset
+# shuffles it and can therefore change the verified input, the perturbable
+# pixels and the QUBO, which silently invalidates the shipped results. So an
+# existing dataset is never overwritten unless it is asked for explicitly:
+#
+#     OVERWRITE=1 python DatasetCreation.py
+#
+Overwrite = os.environ.get("OVERWRITE", "0").lower() in ("1", "true", "yes")
+
+Folder = f"Dataset/{InputSize}x{InputSize}"
+TrainFile = Folder + "/Train.txt"
+TestFile = Folder + "/Test.txt"
+
+Existing = [f for f in (TrainFile, TestFile) if os.path.exists(f)]
+if Existing and not Overwrite:
+    print(f"Refusing to overwrite the existing dataset in '{Folder}':")
+    for f in Existing:
+        print(f"  {f}")
+    print("These files are the ones the shipped Info.txt and QUBO files were")
+    print("generated from. Regenerating the dataset reshuffles it and can change")
+    print("the verified input and the perturbable pixels, which would invalidate")
+    print("the shipped QUBO instances and results.")
+    print("Re-run with OVERWRITE=1 python DatasetCreation.py if that is intended.")
+    raise SystemExit(1)
+
 train_dataloader, test_dataloader = dataloaders(args)
 
 Datasize  = train_dataloader.dataset[0][0].shape
-Folder = f"Dataset/{InputSize}x{InputSize}"
 try:
     os.makedirs(Folder)
     print(f"Folder '{Folder}' created successfully!")
 except FileExistsError:
     print(f"Folder '{Folder}' already exists!")
 
-torch.save(train_dataloader, Folder+"/Train.txt")
-torch.save(test_dataloader, Folder+"/Test.txt")
+torch.save(train_dataloader, TrainFile)
+torch.save(test_dataloader, TestFile)
 
 print(len(train_dataloader.dataset))
 print(len(test_dataloader.dataset))
