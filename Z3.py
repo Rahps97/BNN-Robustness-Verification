@@ -375,28 +375,44 @@ def _encode_network(
     return previous
 
 
-def _misclassification_constraint(logits: Sequence[Any], target: int, specification: str) -> Any:
+# The one sound misclassification specification: it is exactly the negation of
+# "torch.argmax(logits) == target" for the network the paper trains and
+# evaluates. Two weaker variants used to be selectable here and both were
+# unsound, so they were removed; see the note above _misclassification_constraint.
+SPECIFICATION = "torch_argmax"
+
+
+def _misclassification_constraint(logits: Sequence[Any], target: int) -> Any:
+    """Encode "the network no longer predicts ``target``", exactly.
+
+    torch.argmax returns the LOWEST index among tied maxima, so the prediction
+    differs from ``target`` exactly when some competitor c satisfies
+
+        logits[c] >= logits[target]   if c < target   (c wins the tie)
+        logits[c] >  logits[target]   if c > target   (target wins the tie)
+
+    Two weaker variants were previously selectable and are deliberately gone:
+
+      * "strict_competitor" required logits[c] > logits[target] for every c,
+        dropping the c < target tie case. It under-approximates
+        misclassification, so it returns UNSAT -- and previously reported
+        certified_robust=True -- on instances that do have a counterexample.
+        On the shipped 11x11 instance at epsilon 2 it certified robustness
+        while the correct encoding finds a genuine 2-pixel flip taking 8 -> 1.
+      * "qubo_margin" required only logits[c] >= logits[target] for every c,
+        adding the c > target tie case that torch.argmax resolves in favour of
+        target. It over-approximates, producing SAT witnesses that do not
+        actually change the label. On the shipped 5x5 instance at epsilon 3 it
+        returns a "counterexample" that still classifies as 0.
+    """
     competitors = [index for index in range(len(logits)) if index != target]
     if not competitors:
         raise ValueError("The network must have at least two output classes.")
 
-    if specification == "torch_argmax":
-        # torch.argmax returns the lowest index among tied maxima.
-        conditions = [
-            logits[index] >= logits[target] if index < target else logits[index] > logits[target]
-            for index in competitors
-        ]
-    elif specification == "qubo_margin":
-        # Logical violation of target >= competitor + 1 for integer logits.
-        conditions = [logits[index] >= logits[target] for index in competitors]
-    elif specification == "strict_competitor":
-        conditions = [logits[index] > logits[target] for index in competitors]
-    else:
-        raise ValueError(
-            "specification must be one of: 'torch_argmax', 'qubo_margin', "
-            "or 'strict_competitor'."
-        )
-
+    conditions = [
+        logits[index] >= logits[target] if index < target else logits[index] > logits[target]
+        for index in competitors
+    ]
     return Or(conditions)
 
 
@@ -405,7 +421,6 @@ def verify_instance(
     checkpoint_path: str | Path,
     *,
     timeout_seconds: float = 300.0,
-    specification: str = "torch_argmax",
     epsilon_override: int | None = None,
     require_clean_correct: bool = True,
     result_json_path: str | Path | None = None,
@@ -413,7 +428,7 @@ def verify_instance(
     """Verify one BNN robustness instance exactly with Z3.
 
     Status interpretation:
-      * SAT: a counterexample satisfying ``specification`` exists.
+      * SAT: a counterexample exists within the perturbation budget.
       * UNSAT: the instance is formally robust for the encoded perturbation set.
       * UNKNOWN: no conclusion, usually because the timeout was reached.
     """
@@ -481,7 +496,7 @@ def verify_instance(
     solver.add(_sum_z3(changed_expressions) <= epsilon)
 
     logits = _encode_network(input_spin_expressions, layers)
-    solver.add(_misclassification_constraint(logits, info.target_label, specification))
+    solver.add(_misclassification_constraint(logits, info.target_label))
 
     start_time = time.perf_counter()
     check_result = solver.check()
@@ -533,10 +548,33 @@ def verify_instance(
     else:  # Defensive fallback.
         status = str(check_result).upper()
 
+    # Never report a conclusion on the solver status alone. A SAT answer counts
+    # as a counterexample only once the independent NumPy forward pass confirms
+    # that the witness really changes the label, and it must also respect the
+    # budget and touch only perturbable coordinates.
+    witness_within_budget = hamming_distance is not None and hamming_distance <= epsilon
+    witness_only_perturbable = changed_indices is not None and all(
+        index in perturbable_set for index in changed_indices
+    )
+    counterexample_found = bool(
+        status == "SAT"
+        and witness_forward_changes_label
+        and witness_within_budget
+        and witness_only_perturbable
+    )
+    if status == "SAT" and not counterexample_found:
+        raise RuntimeError(
+            "Z3 returned SAT but the witness failed independent re-evaluation "
+            f"(label changed: {witness_forward_changes_label}, hamming "
+            f"{hamming_distance} <= epsilon {epsilon}: {witness_within_budget}, "
+            f"only perturbable coordinates flipped: {witness_only_perturbable}). "
+            "This indicates an encoding bug; the result is not trustworthy."
+        )
+
     result = VerificationResult(
         info_path=str(Path(info_path)),
         checkpoint_path=str(Path(checkpoint_path)),
-        specification=specification,
+        specification=SPECIFICATION,
         status=status,
         reason_unknown=reason_unknown,
         runtime_seconds=runtime_seconds,
@@ -550,7 +588,7 @@ def verify_instance(
         clean_prediction=clean_prediction,
         clean_logits=[int(value) for value in clean_logits_array.tolist()],
         certified_robust=status == "UNSAT",
-        counterexample_found=status == "SAT",
+        counterexample_found=counterexample_found,
         witness_forward_changes_label=witness_forward_changes_label,
         adversarial_prediction=adversarial_prediction,
         adversarial_logits=adversarial_logits,
@@ -589,7 +627,6 @@ def verify_many(
     *,
     output_csv_path: str | Path,
     timeout_seconds: float = 300.0,
-    specification: str = "torch_argmax",
     epsilon_override: int | None = None,
 ) -> list[VerificationResult]:
     """Verify multiple Info files and write one reviewer-table-ready CSV."""
@@ -599,7 +636,6 @@ def verify_many(
             info_path,
             checkpoint_path,
             timeout_seconds=timeout_seconds,
-            specification=specification,
             epsilon_override=epsilon_override,
         )
         results.append(result)
@@ -630,7 +666,6 @@ def scan_minimum_adversarial_distance(
     start_epsilon: int = 0,
     max_epsilon: int | None = None,
     timeout_seconds: float = 300.0,
-    specification: str = "torch_argmax",
     output_csv_path: str | Path | None = None,
     summary_json_path: str | Path | None = None,
     per_radius_json_dir: str | Path | None = None,
@@ -674,7 +709,7 @@ def scan_minimum_adversarial_distance(
     print("\n=== Z3 Minimum-Adversarial-Distance Scan ===")
     print(f"Info file              : {Path(info_path)}")
     print(f"Checkpoint             : {Path(checkpoint_path)}")
-    print(f"Specification          : {specification}")
+    print(f"Specification          : {SPECIFICATION}")
     print(f"Radius range           : {start_epsilon} ... {effective_max}")
     print(f"Timeout per radius (s) : {timeout_seconds}")
     print("\n epsilon | status  | runtime (s) | witness distance | prediction")
@@ -689,7 +724,6 @@ def scan_minimum_adversarial_distance(
             info_path,
             checkpoint_path,
             timeout_seconds=timeout_seconds,
-            specification=specification,
             epsilon_override=epsilon,
             result_json_path=radius_json_path,
         )
@@ -752,14 +786,13 @@ def scan_minimum_adversarial_distance(
         info_path,
         checkpoint_path,
         timeout_seconds=timeout_seconds,
-        specification=specification,
         epsilon_override=start_epsilon,
     )
 
     summary = RadiusScanSummary(
         info_path=str(Path(info_path)),
         checkpoint_path=str(Path(checkpoint_path)),
-        specification=specification,
+        specification=SPECIFICATION,
         scan_status=scan_status,
         start_epsilon=start_epsilon,
         requested_max_epsilon=requested_max,
@@ -868,11 +901,6 @@ INFO_PATH = f"QUBO/{InputSize}x{InputSize}/{InputDataSize}x7x10/Info.txt"
 CHECKPOINT_PATH = f"TrainedNN/{InputSize}x{InputSize}/{InputDataSize}x7x10/{InputDataSize}.pth"
 TIMEOUT_SECONDS = 600.0
 
-# Recommended for the reviewer table: exact label change under torch.argmax.
-# Use "qubo_margin" only to test the logical violation of the QUBO condition
-# target_logit >= competitor_logit + 1.
-SPECIFICATION = "torch_argmax"
-
 # Choose:
 #   "scan"   -> test epsilon = 0, 1, 2, ... and stop at the first SAT radius.
 #   "single" -> verify only one epsilon value.
@@ -907,7 +935,6 @@ if __name__ == "__main__":
             start_epsilon=SCAN_START_EPSILON,
             max_epsilon=SCAN_MAX_EPSILON,
             timeout_seconds=TIMEOUT_SECONDS,
-            specification=SPECIFICATION,
             output_csv_path=SCAN_CSV_PATH,
             summary_json_path=SCAN_SUMMARY_JSON_PATH,
             per_radius_json_dir=SCAN_PER_RADIUS_JSON_DIR,
@@ -918,7 +945,6 @@ if __name__ == "__main__":
             INFO_PATH,
             CHECKPOINT_PATH,
             timeout_seconds=TIMEOUT_SECONDS,
-            specification=SPECIFICATION,
             epsilon_override=SINGLE_EPSILON_OVERRIDE,
             result_json_path=SINGLE_RESULT_JSON_PATH,
         )
