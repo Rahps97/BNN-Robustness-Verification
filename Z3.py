@@ -498,6 +498,8 @@ def verify_instance(
     logits = _encode_network(input_spin_expressions, layers)
     solver.add(_misclassification_constraint(logits, info.target_label))
 
+    # NOTE: this measures solve time only. The clock starts after the formula
+    # has been built, so encoding/construction time is deliberately excluded.
     start_time = time.perf_counter()
     check_result = solver.check()
     runtime_seconds = time.perf_counter() - start_time
@@ -887,24 +889,35 @@ def print_result(result: VerificationResult) -> None:
 # USER CONFIGURATION
 # -----------------------------------------------------------------------------
 
-# Run this script from the project root and edit these paths as needed.
+# Run this script from the project root and edit these constants as needed.
+#
+# To reproduce Table V of the paper, keep RUN_MODE = "single" (the default) and
+# run this script once per row, changing only the Sizes index below:
+#
+#   InputSize = Sizes[0]   ->  5x5,   31x7x10,  epsilon 8    -> SAT (not robust)
+#   InputSize = Sizes[1]   ->  7x7,   63x7x10,  epsilon 32   -> SAT (not robust)
+#   InputSize = Sizes[2]   ->  11x11, 127x7x10, epsilon 32   -> SAT (not robust)
+#   InputSize = Sizes[3]   ->  28x28, 1023x7x10, epsilon 128 -> SAT (not robust)
+#
+# The epsilon of each row is the one recorded in that instance's Info.txt, so it
+# is picked up automatically; leave SINGLE_EPSILON_OVERRIDE at None.
 Sizes = [5, 7, 11, 28]
 DataSize = {5: 31, 7: 63, 11: 127, 28: 1023}
 
-InputSize = Sizes[3]   # 11x11 example; change index for 5/7/28
+InputSize = Sizes[0]   # 5x5 example; use index 1/2/3 for 7x7 / 11x11 / 28x28
 InputDataSize = DataSize[InputSize]
-QUBOFolder = f"QUBO/{InputSize}x{InputSize}/{InputDataSize}x7x10/"
 
-
-# Run this script from the project root and edit these paths as needed.
 INFO_PATH = f"QUBO/{InputSize}x{InputSize}/{InputDataSize}x7x10/Info.txt"
 CHECKPOINT_PATH = f"TrainedNN/{InputSize}x{InputSize}/{InputDataSize}x7x10/{InputDataSize}.pth"
 TIMEOUT_SECONDS = 600.0
 
 # Choose:
-#   "scan"   -> test epsilon = 0, 1, 2, ... and stop at the first SAT radius.
-#   "single" -> verify only one epsilon value.
-RUN_MODE = "scan"
+#   "single" -> verify the epsilon recorded in Info.txt. This is the Table V
+#               query and is the default.
+#   "scan"   -> test epsilon = 0, 1, 2, ... and stop at the first SAT radius,
+#               which yields the exact minimum adversarial distance. This is a
+#               separate experiment and is much slower for the larger sizes.
+RUN_MODE = "single"
 
 # --------------------------- Scan-mode settings ------------------------------
 SCAN_START_EPSILON = 0
