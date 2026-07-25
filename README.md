@@ -96,6 +96,14 @@ python DatasetCreation.py
 
 This script creates the binarized dataset used for neural-network training and robustness verification.
 
+The repository ships a dataset for each image size, and every `Info.txt` and every QUBO in the repository was generated from those exact files. `DatasetCreation.py` therefore refuses to overwrite an existing `Dataset/{S}x{S}/Train.txt` or `Test.txt` and exits with a message. This matters because `args.shuffle` is `True`: a regenerated dataset is in a different order, and `QUBOCreator.py` selects the verified input as the first correctly classified training sample and the perturbable pixels by mean absolute value over the training set. Both can change, which would invalidate the shipped QUBO instances and the reported results.
+
+**If you only want to reproduce the shipped results, skip this step entirely** and start at step 3 (or step 4, since the QUBOs are shipped too). To regenerate the dataset deliberately, for a new image size or a fresh experiment:
+
+```bash
+OVERWRITE=1 python DatasetCreation.py
+```
+
 ### 2. Train the neural network
 
 ```bash
@@ -142,16 +150,59 @@ This script solves the generated QUBO using simulated annealing.
 
 The FEM and simulated-annealing solvers are heuristic solvers. Their outputs should therefore be validated against the QUBO constraints and the original BNN before being interpreted as valid adversarial counterexamples or robustness-verification results.
 
-### 5. Exact SMT baseline (optional)
+### 5. Exact SMT verification with Z3
 
 ```bash
-python z3_baseline.py validate
-python z3_baseline.py sweep
+python Z3.py
 ```
 
-This script encodes the same robustness-verification problem directly as an SMT formula and decides it exactly with Z3, without going through the QUBO. It selects the perturbable pixels and the verified input exactly as `QUBOCreator.py` does, so it addresses the same instance and can be used as ground truth against which the heuristic QUBO solvers are checked.
+`Z3.py` decides the robustness-verification problem exactly. It reads the instance from the same `Info.txt` the QUBO pipeline produces (the clean input, the perturbable pixel set, the label and the perturbation budget epsilon), reads the trained checkpoint, and encodes the problem directly as an SMT formula rather than as a QUBO:
 
-`validate` cross-checks the encoding against an independent NumPy forward pass and against exhaustive enumeration of the whole perturbation space. `sweep` decides robustness at every perturbation budget from 0 to 16 and reports timings. `python z3_baseline.py scaling` runs a synthetic study of how Z3 runtime grows with problem size; it is slow and does not need the trained network.
+* inputs are spins in `{-1, +1}`, with a Boolean variable created only for the perturbable pixels;
+* the perturbation budget is the cardinality constraint `sum(changed) <= epsilon`;
+* hidden layers use the sign convention of `Binarize.forward`, mapping `>= 0` to `+1`;
+* misclassification is the exact negation of `torch.argmax(logits) == label`. Because `torch.argmax` returns the lowest index among tied maxima, this is `logits[c] >= logits[label]` for `c < label` and `logits[c] > logits[label]` for `c > label`.
+
+`SAT` means an adversarial example exists within the budget, so the instance is **not robust**. `UNSAT` is a proof that none exists, so the instance is **certified robust** for that perturbation set. `UNKNOWN` means the timeout was reached and nothing is concluded.
+
+Because Z3 is exact, its verdict is ground truth against which the heuristic QUBO solvers (FEM, SA) can be checked.
+
+#### Reproducing Table V
+
+Table V reports the verification result at the epsilon recorded in each instance's `Info.txt`. The defaults in `Z3.py` are already set for this: `RUN_MODE = "single"` and no epsilon override. Run the script once per row, changing only the `Sizes` index in the configuration block near the bottom of the file:
+
+| Table V row | `Z3.py` setting | Architecture | Epsilon | Result |
+| --- | --- | --- | --- | --- |
+| 5x5 | `InputSize = Sizes[0]` | 31x7x10 | 8 | SAT (NR) |
+| 7x7 | `InputSize = Sizes[1]` | 63x7x10 | 32 | SAT (NR) |
+| 11x11 | `InputSize = Sizes[2]` | 127x7x10 | 32 | SAT (NR) |
+| 28x28 | `InputSize = Sizes[3]` | 1023x7x10 | 128 | SAT (NR) |
+
+All four are SAT, i.e. **NR (not robust)**: within the stated budget an adversarial example exists in every case. Each run writes `Z3_Results/{S}x{S}/{D}x7x10/Z3_Single_Result.json` with the full witness.
+
+Two things to note about the reported timings:
+
+* **The reported runtime is solve time only.** `runtime_seconds` is measured around `solver.check()` alone; the clock starts after the SMT formula has been constructed, so formula construction, `Info.txt` parsing and checkpoint loading are all excluded. Wall-clock time for the whole script is larger, and the gap grows with instance size.
+* Timings vary between machines and between runs. The SAT/UNSAT verdicts do not.
+
+#### Minimum adversarial distance (separate experiment)
+
+Setting `RUN_MODE = "scan"` instead solves epsilon = 0, 1, 2, ... and stops at the first `SAT`. Because the feasible perturbation set grows monotonically with epsilon, that first SAT radius is the exact minimum adversarial distance, and the largest UNSAT radius below it is a certified robust radius. This is a different and much more expensive experiment than the Table V query; it is not what Table V reports.
+
+### 6. Independently validate the results
+
+```bash
+python verify_counterexamples.py
+```
+
+`Z3.py` is a verifier, so its output should not be taken on trust. `verify_counterexamples.py` is a validation harness, not a second solver. It shares no code with `Z3.py` and does not import it: it re-parses `Info.txt` with its own parser, re-loads the checkpoint and re-binarizes the weights itself, and runs its own NumPy forward pass. If `Z3.py`'s encoding, parsing, binarization or argmax tie-breaking were wrong, the two would disagree.
+
+It runs two checks, selectable as `python verify_counterexamples.py check` and `python verify_counterexamples.py bruteforce`:
+
+* **`check`** reverse-verifies the witness in the result JSON written by `Z3.py`: that it flips exactly the reported coordinates, that every flipped coordinate is in the permitted perturbable set, that the Hamming distance is within the budget solved for, that the clean input reproduces the label recorded in `Info.txt`, and above all that the perturbed input really is classified differently. An `UNSAT` answer is flagged as a proof of absence that no witness can confirm.
+* **`bruteforce`** enumerates perturbations by increasing Hamming distance and reports the first distance at which the label changes. This is the exact minimum adversarial distance by construction, independent of Z3 and of any encoding. Distance levels larger than `MAX_COMBINATIONS_PER_LEVEL` are skipped and the script states how far the exhaustive proof reaches.
+
+Set `InputSize` the same way as in `Z3.py`. On the four shipped instances every Table V witness passes reverse-verification, and brute force confirms minimum adversarial distances of 3, 1, 2 and 2 for 5x5, 7x7, 11x11 and 28x28 respectively.
 
 ## Repeated Simulated-Annealing Stability Evaluation
 
@@ -165,7 +216,7 @@ This script performs multiple independent simulated-annealing runs to assess the
 
 ## Configuring the Experiments
 
-All parameters are plain module-level constants near the top of each script; there is no configuration file and no command-line interface. The table below lists where each configurable quantity actually lives.
+All parameters are plain module-level constants; there is no configuration file. Most scripts declare them near the top, `Z3.py` in a `USER CONFIGURATION` block near the bottom. The only command-line arguments anywhere are the optional `check` / `bruteforce` subcommands of `verify_counterexamples.py`. The table below lists where each configurable quantity actually lives.
 
 | What you want to change | File | Variable |
 | --- | --- | --- |
@@ -176,6 +227,9 @@ All parameters are plain module-level constants near the top of each script; the
 | | `SA_repeated.py` | `INPUT_SIZE = SIZES[0]` |
 | | `Gurobi.py` | `InputSize = Sizes[0]` |
 | | `FEM.py` | `InputSize = Sizes[0]` (inside `__main__`) |
+| | `Z3.py` | `InputSize = Sizes[0]` |
+| | `verify_counterexamples.py` | `InputSize = Sizes[0]` |
+| Overwriting a shipped dataset | `DatasetCreation.py` | `OVERWRITE=1` environment variable |
 | Training batch size | `DatasetCreation.py` | `batch_size_train` |
 | Downscaling / padding / contradiction removal | `DatasetCreation.py` | `args.downscale`, `args.pad_flattened_dataset`, `args.remove_contradicting`, `args.use_adaptive` |
 | Classes included in the dataset | `DatasetCreation.py`, `QUBOCreator.py` | `args.selected_targets` |
@@ -190,7 +244,11 @@ All parameters are plain module-level constants near the top of each script; the
 | Repeated-SA settings | `SA_repeated.py` | `NUM_REPETITIONS`, `SEEDS`, `NUM_READS`, `NUM_SWEEPS`, `BETA_SCHEDULE_TYPE` |
 | FEM search budget | `FEM.py` | `total_rounds`, `search_precision`, `N_step`, `batch` (inside `__main__`) |
 | FEM optimizer / annealing mode | `FEM.py` | `optimizer`, `betamode` |
-| Z3 perturbation budget sweep | `z3_baseline.py` | `eps_max` argument of `cmd_sweep` |
+| Z3 query type (Table V vs. distance scan) | `Z3.py` | `RUN_MODE` (`"single"` / `"scan"`) |
+| Z3 solver timeout | `Z3.py` | `TIMEOUT_SECONDS` |
+| Z3 epsilon, overriding `Info.txt` | `Z3.py` | `SINGLE_EPSILON_OVERRIDE` |
+| Z3 distance-scan range | `Z3.py` | `SCAN_START_EPSILON`, `SCAN_MAX_EPSILON` |
+| Brute-force enumeration budget | `verify_counterexamples.py` | `MAX_COMBINATIONS_PER_LEVEL` |
 
 The image size is the one parameter that must be changed consistently across scripts: `DatasetCreation.py` uses a literal `InputSize = 5`, while the other scripts index into `Sizes = [5, 7, 11, 28]`, so `Sizes[0]` selects 5x5, `Sizes[1]` selects 7x7, and so on. The derived data dimension (`31`, `63`, `127`, `1023`) and all folder paths follow automatically.
 
@@ -227,23 +285,54 @@ Ocean SA -> best_energy = -530.000000, time = 6.19s
 The printed vector is the best assignment found, ordered as in `Variables.json`. Its energy should be compared against the `Minimum Energy` recorded in `Info.txt`; as noted above, SA and FEM are heuristics, so a returned assignment is only a robustness result once it has been validated against the QUBO constraints and the original BNN.
 
 ```bash
-# Cross-check the answer exactly with the SMT baseline
-python z3_baseline.py validate
+# Decide the same instance exactly with Z3 (the Table V query, epsilon = 8)
+python Z3.py
 ```
 
 ```text
-perturbable pixels : [0, 20, 4, 24, 5, 15, 10, 1, 3, 9, 19, 23, 21, 14, 2, 22]
-clean label        : 0
-
-(b) eps=2  -> unsat  [expected unsat]
-(c) eps=3  -> sat    flips=[4, 20, 22]   [expected sat]
-    numpy re-eval: 0 -> 6, hamming=3
-
-(d) brute force over 2^16: min adversarial hamming = 3 via [0, 20, 4]
-
-VALIDATION: PASS
+=== Exact Z3 BNN Verification ===
+Architecture           : 31 x 7 x 10
+Target / clean pred.   : 0 / 0
+Perturbable coordinates: 16
+Epsilon                : 8
+Status                 : SAT
+Conclusion             : COUNTEREXAMPLE FOUND
+Changed indices        : [0, 1, 2, 3, 4, 14, 19, 23]
+Hamming distance       : 8
+Adversarial prediction : 2
+Forward label changed  : True
 ```
 
-For this instance the network is robust up to a perturbation budget of 2 and not robust from 3 onwards: flipping three pixels changes the prediction from class 0 to class 6. Exhaustive enumeration of all 2^16 perturbations confirms 3 is the true minimum.
+`SAT` is the 5x5 row of Table V: within a budget of 8 pixel flips the network is **not robust**, and Z3 returns a concrete witness taking class 0 to class 2.
 
-Timings, energies and the particular witness reported by the heuristic solvers vary between runs and machines; the robust/non-robust boundary reported by `z3_baseline.py` does not.
+```bash
+# Independently validate that answer
+python verify_counterexamples.py
+```
+
+```text
+  [PASS] independent forward pass reproduces the Info.txt label: independent 0 vs Info.txt 0
+  [NOTE] epsilon 8 taken from Info.txt (no override)
+  [PASS] changed coordinates match the reported ones: 8 flipped
+  [PASS] Hamming distance is within the epsilon budget: 8 <= 8
+  [PASS] only permitted pixels were flipped: none outside the perturbable set
+  [PASS] independent forward pass changes the label: 0 -> 2
+  [PASS] independent adversarial logits match the reported ones: [3, -1, 5, 1, -5, -1, -3, 1, 1, 1]
+
+RESULT: PASS
+
+ distance | combinations | cumulative time (s) | result
+----------+--------------+---------------------+--------
+        0 |            1 |                0.00 | none
+        1 |           16 |                0.00 | none
+        2 |          120 |                0.00 | none
+        3 |          560 |                0.00 | FOUND 0 -> 6
+
+Minimum adversarial distance is exactly 3: every perturbation of 2 or fewer
+perturbable pixels was enumerated and none changes the label.
+Witness: flip pixels [0, 20, 4] -> class 6
+```
+
+The first block re-derives everything with its own code and confirms the witness is a genuine adversarial example. The second goes further: for this instance the network is robust up to a perturbation budget of 2 and not robust from 3 onwards, since flipping the three pixels 0, 20 and 4 changes the prediction from class 0 to class 6. Exhaustive enumeration proves 3 is the true minimum.
+
+Timings, energies and the particular witness reported by the heuristic solvers vary between runs and machines; the robust/non-robust boundary reported by `Z3.py` does not.

@@ -12,3 +12,4 @@ mnist/
 # Solver output
 SA_Repeated_Results/
 FEM_Solutions/
+Z3_Results/
