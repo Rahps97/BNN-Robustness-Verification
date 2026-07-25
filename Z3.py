@@ -465,8 +465,20 @@ def verify_instance(
     solver = Solver()
     solver.set(timeout=max(1, int(round(timeout_seconds * 1000))))
 
-    if info.perturbation_bound_included or epsilon_override is not None:
-        solver.add(_sum_z3(changed_expressions) <= epsilon)
+    # The perturbation budget is what makes the query meaningful. Without it
+    # every instance is trivially satisfiable, so refuse to run rather than
+    # report a result that looks like a counterexample at "epsilon N" but was
+    # actually obtained with an unbounded perturbation.
+    if not (info.perturbation_bound_included or epsilon_override is not None):
+        raise ValueError(
+            f"{info.info_path} reports 'Perturbation Bound Constriant included : "
+            "False', so it carries no perturbation budget, and no "
+            "epsilon_override was supplied. Verifying without a budget would "
+            "make every instance trivially satisfiable. Regenerate the QUBO "
+            "with args.include_perturbation_bound_constraint = True, or pass an "
+            "explicit epsilon_override."
+        )
+    solver.add(_sum_z3(changed_expressions) <= epsilon)
 
     logits = _encode_network(input_spin_expressions, layers)
     solver.add(_misclassification_constraint(logits, info.target_label, specification))
