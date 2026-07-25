@@ -1,0 +1,24 @@
+# Package versions validated for this repository.
+#
+# The 5x5 pipeline was run end to end against exactly these versions on a
+# CPU-only machine with Python 3.9.12: DatasetCreation.py, QUBOCreator.py,
+# SA.py, FEM.py and z3_baseline.py.
+#
+# PyTorch is hardware dependent. Install the build matching your operating
+# system, processor architecture and CUDA/ROCm version; the pins below are
+# the CPU builds that were validated.
+#
+# gurobipy is deliberately not listed here: Gurobi.py also requires a valid
+# Gurobi license, which installing the package alone does not provide.
+#     python -m pip install gurobipy
+
+torch==2.2.2
+torchvision==0.17.2
+numpy==1.26.4
+scipy==1.13.1
+matplotlib==3.9.4
+tqdm==4.69.1
+qubovert==1.2.5
+dimod==0.12.21
+dwave-samplers==1.6.0
+z3-solver==5.0.0.0

@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs (including solver logs such as gurobi.log)
+*.log
+
+# Downloaded raw data
+mnist/
+
+# Solver output
+SA_Repeated_Results/
+FEM_Solutions/
