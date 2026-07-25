@@ -491,10 +491,18 @@ def verify_instance(
                 model.eval(variable, model_completion=True)
             ) else 0
 
+        # zip(..., strict=True) requires Python 3.10; check the lengths instead
+        # so that the script also runs on Python 3.9.
+        if len(adversarial_input) != len(info.input_boolean):
+            raise RuntimeError(
+                "Internal error: the witness has length "
+                f"{len(adversarial_input)} but the clean input has length "
+                f"{len(info.input_boolean)}."
+            )
         changed_indices = [
             index
             for index, (before, after) in enumerate(
-                zip(info.input_boolean, adversarial_input, strict=True)
+                zip(info.input_boolean, adversarial_input)
             )
             if before != after
         ]
