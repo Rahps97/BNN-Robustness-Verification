@@ -48,8 +48,8 @@ Q = res
 n = Q.shape[0]
 
 # --- Parameters (feel free to tweak for fairness) ---
-NUM_READS = 1024
-NUM_SWEEPS = 1000
+NUM_READS = 2048
+NUM_SWEEPS = 5000
 
 # --- D-Wave Ocean SA ---
 out_sa = run_dwave_sa(Q, num_reads=NUM_READS, num_sweeps=NUM_SWEEPS, beta_schedule_type="geometric")
