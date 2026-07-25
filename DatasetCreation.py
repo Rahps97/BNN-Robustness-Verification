@@ -45,7 +45,7 @@ print(len(train_dataloader.dataset))
 print(len(test_dataloader.dataset))
 
 
-file = open("/home/rahul/QABNN/Experiment/"+Folder+"/Info.txt", "w")
+file = open(Folder+"/Info.txt", "w")
 file.write(f"Batch Size : {batch_size_train} \n" )
 file.write(f"Picture Size : {InputSize}x{InputSize} \n" )
 file.write(f"Data Size : {Datasize[0]} \n" )
