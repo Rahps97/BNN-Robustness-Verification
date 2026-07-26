@@ -98,12 +98,14 @@ Use this only if the upstream owner cannot run §1. The DOI is just as permanent
 you lose is the automatic link to the GitHub release and the automatic archiving of
 future releases.
 
-A ready-to-upload snapshot has already been produced. It is a complete clone —
-the working tree **plus the full git history and all tags**, so `paper-results-v1` and
-every commit message survive inside the archive. That is strictly more provenance than
-GitHub's release ZIP, which contains no `.git` directory at all.
+A ready-to-upload snapshot (~10 MB gzipped) was produced alongside this checklist and
+handed over separately. It is a complete clone — the working tree **plus the full git
+history and all tags** — so `paper-results-v1`, its commit `47b877e` and every commit
+message survive *inside* the archive. That is strictly more provenance than GitHub's
+release ZIP, which contains no `.git` directory at all, and it is the one respect in
+which the manual route beats the automatic one.
 
-To regenerate it from scratch:
+If you no longer have that file, this is exactly how it was made:
 
 ```bash
 git clone --no-local /path/to/repo /tmp/zenodo-snapshot/BNN-Robustness-Verification
