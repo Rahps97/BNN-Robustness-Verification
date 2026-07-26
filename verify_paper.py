@@ -62,7 +62,7 @@ covers the 5x5 alone, in about five seconds.
                        from the two counts. The training-set size is counted
                        from the shipped DataLoader in data/datasets.tar.gz.
 
-  Tables III, IV, VI   Each QUBO instance is rebuilt from scratch with the
+  Tables III, IV, VII  Each QUBO instance is rebuilt from scratch with the
                        authors' own builder, ``bnn_as_qubo.setup_optim_model``,
                        and the number of variables, the number of encoded
                        constraints and the constant energy offset are compared
@@ -86,7 +86,7 @@ covers the 5x5 alone, in about five seconds.
                        other rows). Both are run on every instance, so each
                        number is confirmed twice by independent means.
 
-  Width sweep          The revision's hidden-layer width table. Each width's
+  Table VI             The revision's hidden-layer width table. Each width's
                        QUBO is rebuilt from its shipped checkpoint and the
                        stored best annealing vectors are re-scored against it,
                        the same way the FEM column is verified from its stored
@@ -117,8 +117,9 @@ Opt-in checks
                     --timeout 0 means NO limit, on every check including the
                     opt-in ones. A negative value is rejected.
 
-Table VII has no flag either: the two-class instance, all three archived solution
-vectors and the authors' own notebooks ship in data/hardware_results.tar.gz, so
+Table VIII has no flag either: the two-class instance, all three archived
+solution vectors and the authors' own notebooks ship in
+data/hardware_results.tar.gz, so
 the Gurobi, D-Wave and Fujitsu rows are re-evaluated by default and the SA row is
 re-run by default (a couple of seconds on that instance). Every cell of the table
 is therefore checked here without a license and without hardware. The coupling
@@ -129,7 +130,7 @@ perturbation sizes are asserted, and the solver runtimes that go with them are
 printed but never asserted, because wall time is machine dependent.
 
 One reported figure has no offline substitute and is not checked anywhere here.
-Table VII's 0.724 s for the quantum annealer, and the "~20 microseconds per
+Table VIII's 0.724 s for the quantum annealer, and the "~20 microseconds per
 shot" that follows from it, come from the run log of the D-Wave session. The
 archived DataFrame carries no timing metadata -- its columns are the 113 spins
 plus chain_break_fraction, energy and num_occurrences -- and hardware/Time/
@@ -202,8 +203,8 @@ PAPER = {
         "perturbable": 16,           # Table III, "Perturbed Pixels"
         "epsilon": 8,                # Table III, "Perturbation Bound"
         "variables": 276,            # Tables III, IV
-        "constraints": 200,          # Tables III, IV, VI, "Total Constraints"
-        "offset": 533,               # Tables III, IV, VI, "Energy Offset" E_off
+        "constraints": 200,          # Tables III, IV, VII, "Total Constraints"
+        "offset": 533,               # Tables III, IV, VII, "Energy Offset" E_off
         "fem_score": 533,            # Table IV, FEM column
         "sa_score": 533,             # Table IV, SA column
         "gurobi_score": 529,         # Table IV, Gurobi column
@@ -284,7 +285,7 @@ WIDTH_PUBLICATION_SERIES = 5
 # The manuscript's width-scaling table, row by row, for the 31-input series.
 # Z3 Runtime and SA Median Time are in the table too and are NOT here: both are
 # wall-clock figures and machine dependent, exactly as Table IV's SA time and
-# Table VII's Gurobi time are, so they are printed and never asserted.
+# Table VIII's Gurobi time are, so they are printed and never asserted.
 WIDTH_PAPER = {
     #        QUBO       QUBO      best SA   seeds at   d_min
     #    variables     terms      gap dE      target
@@ -315,7 +316,7 @@ WIDTH_SCAN_SERIES = (5,)
 # exceed even this bound there -- which is reported as TIMEOUT, never as FAIL.
 WIDTH_Z3_TIMEOUT_SECONDS = 1800.0
 
-# Table VII's two-class instance, as supplied by the authors.
+# Table VIII's two-class instance, as supplied by the authors.
 HARDWARE_DIR = "hardware"
 HARDWARE_STEM = "113-1273-28-15-zero-3-3-561020-H"
 HARDWARE_QUBO = f"{HARDWARE_DIR}/QUBO/{HARDWARE_STEM}.pickle"
@@ -335,20 +336,20 @@ HARDWARE = {
     "constraints": 65,          # 1 lt + 64 eq
     "qubo_terms": 1272,
     "offset": 874674,           # so the target energy is -874,674
-    "fujitsu_energy": -874674,  # Table VII, Digital Annealer
+    "fujitsu_energy": -874674,  # Table VIII, Digital Annealer
     "fujitsu_time": 0.366,
     "fujitsu_constraints": 65,
-    "gurobi_energy": -874674,   # Table VII, Gurobi
+    "gurobi_energy": -874674,   # Table VIII, Gurobi
     "gurobi_constraints": 65,
     # Reported; machine dependent, so not asserted, exactly as the SA row's time
     # is not. The table's figure was measured on a 64-core Intel Xeon server. The
     # first author's own notebook records 16.658 s for the same instance and a
     # third machine takes 25 to 30 s.
     "gurobi_time": 61.447,
-    "dwave_energy": -874318,    # Table VII, Quantum Annealer
+    "dwave_energy": -874318,    # Table VIII, Quantum Annealer
     "dwave_time": 0.724,
     "dwave_constraints": 36,
-    # Not a figure the paper claims. Table VII reports 5,000 shots for this row,
+    # Not a figure the paper claims. Table VIII reports 5,000 shots for this row,
     # and that is correct: the run was made in two batches, of 4,000 and 1,000
     # shots. Only the 4,000-shot batch was archived, and free D-Wave access has
     # since ended, so the other 1,000 shots cannot be recovered or re-run. The
@@ -356,7 +357,7 @@ HARDWARE = {
     # check recomputes from, and the D-Wave energy and constraint figures above
     # are likewise reproduced from that batch alone.
     "dwave_shots": 4000,
-    "sa_constraints": 65,       # Table VII, Simulated Annealing
+    "sa_constraints": 65,       # Table VIII, Simulated Annealing
     "sa_time": 3.559,           # reported; machine dependent, so not asserted
 
     # Section IV-B's account of WHY the quantum annealer does badly on this
@@ -382,7 +383,7 @@ HARDWARE = {
     "dwave_intact_chain_samples": 0,
 }
 
-# Table VII's SA row is the one default check that runs a stochastic solver
+# Table VIII's SA row is the one default check that runs a stochastic solver
 # rather than re-evaluating an archived vector, because no SA vector was
 # archived. It is affordable only because this instance is small: 113 variables
 # and about 2.3 s per seed at the num_reads the authors' own SA_Verify.ipynb
@@ -495,7 +496,7 @@ NOT_RUN_STATUSES = (SKIPPED, UNAVAILABLE, TIMEOUT, INCONCLUSIVE, NOT_VERIFIABLE)
 # -----------------------------------------------------------------------------
 
 GROUP_TABLE2 = "Table II          BNN accuracy and data set sizes"
-GROUP_STRUCTURE = "Tables III/IV/VI  QUBO structure"
+GROUP_STRUCTURE = "Tables III/IV/VII QUBO structure"
 GROUP_FEM = "Table IV          FEM energies + reverse check"
 GROUP_Z3 = "Table V           Z3 SMT baseline"
 GROUP_DMIN = "Table V           minimum adversarial distance"
@@ -503,12 +504,12 @@ GROUP_GUROBI_LOGS = "Table IV          Gurobi column (logs)"
 GROUP_GUROBI = "Table IV          Gurobi column"
 GROUP_SA = "Table IV          SA column"
 GROUP_FEM_REPLAY = "Table IV          FEM solver replay"
-GROUP_HARDWARE = "Table VII         hardware results"
+GROUP_HARDWARE = "Table VIII        hardware results"
 GROUP_LINEAR = "Section IV-B      linear constraint form"
-# The revision's hidden-layer width table. Deliberately named by its subject
-# rather than by a roman numeral: inserting it renumbers the tables after it,
-# and this file's other group keys still use the pre-revision numbering.
-GROUP_WIDTH = "Width scaling     hidden-layer width sweep"
+# The revision's hidden-layer width table, which the manuscript numbers VI. It
+# is inserted after the Z3 baseline, which is what renumbered the repeated
+# simulated-annealing table to VII and the hardware table to VIII.
+GROUP_WIDTH = "Table VI          hidden-layer width sweep"
 
 # Groups that run without any opt-in flag. If one of these produces no PASS and
 # no FAIL at all, the run verified nothing it was supposed to verify and the
@@ -527,7 +528,7 @@ QUOTA_GUROBI_LOGS = 6
 QUOTA_GUROBI = 1
 QUOTA_SA = 2          # the solver run, and the reverse check on the BNN
 QUOTA_FEM_REPLAY = 1
-# Table VII is a single instance, not one per size: 5 structural checks,
+# Table VIII is a single instance, not one per size: 5 structural checks,
 # 9 coefficient/coupling statistics from the Section IV-B discussion of that
 # same instance, 3 Gurobi, 4 Fujitsu, 6 D-Wave and 3 SA. The Gurobi row owes one
 # fewer than the Fujitsu row because its runtime is machine dependent and is not
@@ -1389,7 +1390,7 @@ unpacked the row says so rather than passing quietly.
 
 
 # -----------------------------------------------------------------------------
-# Group 1 -- Tables III, IV, VI: QUBO structure
+# Group 1 -- Tables III, IV, VII: QUBO structure
 # -----------------------------------------------------------------------------
 
 STRUCTURE_CHECK_NAMES = (
@@ -1408,7 +1409,7 @@ assert len(STRUCTURE_CHECK_NAMES) == QUOTA_STRUCTURE
 
 def check_structure(report, sizes, missing):
     report.section(
-        "Tables III, IV, VI -- QUBO structure "
+        "Tables III, IV, VII -- QUBO structure "
         "(variables / constraints / energy offset)",
         GROUP_STRUCTURE)
     report.note("""
@@ -1416,7 +1417,7 @@ Each instance is rebuilt from scratch with the authors' own builder,
 bnn_as_qubo.setup_optim_model, and the rebuilt matrix is compared entry by
 entry with the shipped QUBO_W.txt.
 
-The distinction that Tables III, IV and VI were corrected for:
+The distinction that Tables III, IV and VII were corrected for:
 
   * Total Constraints is the number of constraints actually encoded in the
     QCBO and carried into the QUBO -- the equality constraints plus the two
@@ -2494,7 +2495,7 @@ paper's value and the gap vs the target energy are reported separately.
 
 
 # -----------------------------------------------------------------------------
-# Group 9 -- Table VII: the two-class hardware instance
+# Group 9 -- Table VIII: the two-class hardware instance
 # -----------------------------------------------------------------------------
 
 def build_hardware_model(pickled):
@@ -2548,20 +2549,20 @@ def count_satisfied(model, solution):
 
 
 HARDWARE_SA_CHECK_NAMES = (
-    "SA best energy (Table VII)",
+    "SA best energy (Table VIII)",
     "every encoded constraint satisfied",
-    "Constraints satisfied (corrected Table VII)",
+    "Constraints satisfied (corrected Table VIII)",
 )
 
 HARDWARE_GUROBI_CHECK_NAMES = (
     "Best energy",
     "every encoded constraint satisfied",
-    "Constraints satisfied (corrected Table VII)",
+    "Constraints satisfied (corrected Table VIII)",
 )
 
 
 def check_hardware_sa(report, model, qubo, deadline):
-    """Table VII's SA row: no vector was archived, so re-run the solver here.
+    """Table VIII's SA row: no vector was archived, so re-run the solver here.
 
     Unlike the two hardware rows this is not a re-evaluation of a recorded
     sample -- simulated annealing is cheap enough on this instance to just run
@@ -2603,12 +2604,12 @@ def check_hardware_sa(report, model, qubo, deadline):
     runtime = time.perf_counter() - started
 
     report.solver_run(
-        "SA best energy (Table VII)", None,
+        "SA best energy (Table VIII)", None,
         paper_energy=target, target_energy=target,
         energies=energies, runtime=runtime,
         hint="rerun -- SA is stochastic. The authors' own SA_Verify.ipynb, in "
              f"{HARDWARE_ARCHIVE}, is the same computation")
-    print(f"{'':<20}note   : Table VII reports "
+    print(f"{'':<20}note   : Table VIII reports "
           f"{HARDWARE['sa_time']} s for this row; wall time is machine "
           f"dependent and is not asserted")
 
@@ -2750,10 +2751,10 @@ def check_hardware_structure(report, pickled):
 
 
 def check_hardware(report, available, deadline):
-    report.section("Table VII -- the two-class instance: hardware rows and SA",
+    report.section("Table VIII -- the two-class instance: hardware rows and SA",
                    GROUP_HARDWARE)
     report.note("""
-Table VII was produced on a D-Wave quantum annealer and on Fujitsu's Digital
+Table VIII was produced on a D-Wave quantum annealer and on Fujitsu's Digital
 Annealer, on a separate two-class instance. That instance, the Gurobi and both
 hardware solutions and the authors' own Verify.ipynb, Verify_Gurobi.ipynb and
 SA_Verify.ipynb now ship in data/hardware_results.tar.gz, so the rows can be
@@ -2762,7 +2763,7 @@ samples, re-evaluated against the QUBO and against every encoded constraint. The
 SA row is the exception: no SA vector was archived, so the solver is simply
 re-run below, which on this instance costs a couple of seconds.
 
-READ THIS BEFORE THE ROWS BELOW. Table VII's "Constraints Satisfied" column
+READ THIS BEFORE THE ROWS BELOW. Table VIII's "Constraints Satisfied" column
 currently prints 1,273 for Gurobi / DA / SA and 356 for the QA. Neither figure
 is a constraint count. This instance has 65 encoded constraints in total:
 
@@ -2776,7 +2777,7 @@ is a constraint count. This instance has 65 encoded constraints in total:
     is 5.5x the total number of constraints that exist.
 
 This is the same confusion between an energy and a constraint count that was
-corrected in Tables III, IV and VI, and Table VII needs the same correction.
+corrected in Tables III, IV and VII, and Table VIII needs the same correction.
 The rows below check the CORRECTED column -- 65 out of 65 for Gurobi, for the
 Digital Annealer and for simulated annealing, 36 out of 65 for the quantum
 annealer -- together with the energies and runtimes, which are what the solvers
@@ -2785,7 +2786,7 @@ actually reported.
     print()
 
     if not available:
-        report.outcome(UNAVAILABLE, "Table VII, two-class instance",
+        report.outcome(UNAVAILABLE, "Table VIII, two-class instance",
                        f"{HARDWARE_DIR}/ is not present",
                        f"tar xzf {HARDWARE_ARCHIVE}")
         return
@@ -2835,7 +2836,7 @@ actually reported.
                      f"qubovert is_solution_valid True, penalty value "
                      f"{model.value(converted):g}, so the target energy is "
                      f"attained exactly")
-    report.check("Constraints satisfied (corrected Table VII)",
+    report.check("Constraints satisfied (corrected Table VIII)",
                  HARDWARE["fujitsu_constraints"], satisfied,
                  detail=f"of {total}; the table prints 1,273, which is the "
                         f"QUBO term count len(H.to_qubo()) = 1,272 terms + "
@@ -2856,7 +2857,7 @@ actually reported.
     report.check("Shots in the returned dataframe", HARDWARE["dwave_shots"],
                  int(frame["num_occurrences"].sum()),
                  detail=f"{len(frame):,} distinct samples, the archived batch "
-                        f"of the 5,000-shot run of Table VII")
+                        f"of the 5,000-shot run of Table VIII")
     # Scored from the sample bits through the QUBO, not read out of the
     # dataframe's own `energy` column. The column only selects which row to
     # look at; if the recorded bits and the recorded energy disagree, this is
@@ -2866,7 +2867,7 @@ actually reported.
                  float(qubo.value(sample) - qubo[()]),
                  detail="the dataframe's own energy column says "
                         f"{float(best['energy']):,.0f}")
-    report.check("Constraints satisfied (corrected Table VII)",
+    report.check("Constraints satisfied (corrected Table VIII)",
                  HARDWARE["dwave_constraints"], satisfied,
                  detail=f"of {total}; the table prints 356, which is the "
                         f"energy gap")
@@ -2923,7 +2924,7 @@ actually reported.
                  HARDWARE["gurobi_constraints"], satisfied,
                  detail=f"of {total}; the table printed 1,273 here too, the "
                         f"same QUBO term count")
-    print(f"{'':<20}note   : Table VII reports "
+    print(f"{'':<20}note   : Table VIII reports "
           f"{HARDWARE['gurobi_time']} s for this row; wall time is machine "
           f"dependent and is not asserted")
 
@@ -2956,7 +2957,7 @@ def check_linear_baseline(report, available, with_gurobi, deadline):
 
     The heavy lifting is in linear_baseline.py, which is also runnable on its
     own; this function is the assertion layer over it. Runtimes are printed and
-    never asserted, exactly as Table VII's Gurobi and SA runtimes are not: the
+    never asserted, exactly as Table VIII's Gurobi and SA runtimes are not: the
     paper's figures for this paragraph were measured on one machine and a
     reviewer's will differ. What IS asserted is the arithmetic those runtimes
     accompany -- the feasible count, d_min, and the two archived vectors'
@@ -2965,17 +2966,17 @@ def check_linear_baseline(report, available, with_gurobi, deadline):
     report.section("Section IV-B -- the same instance in its linear "
                    "constraint form", GROUP_LINEAR)
     report.note("""
-Table VII is five solvers applied to the QUBO. Section IV-B also reports the
+Table VIII is five solvers applied to the QUBO. Section IV-B also reports the
 same instance solved in the LINEAR constraint form the QUBO was built from --
 the 64 equalities and the perturbation-budget inequality, handed to the solver
 directly rather than squared into a penalty. Both forms ship in the same
 pickle: constraints['eq'] and constraints['lt'] are that linear system, and
 every one of the 65 entries is strictly linear.
 
-That comparison is what rescopes the 168x figure of Table VII. It is a speedup
+That comparison is what rescopes the 168x figure of Table VIII. It is a speedup
 over solvers given the QUBO encoding, not over the best available method for
 this instance: Gurobi handles the linear form in about a millisecond against the
-61.447 s of Table VII, and Z3 and plain enumeration are both well under a
+61.447 s of Table VIII, and Z3 and plain enumeration are both well under a
 tenth of a second.
 
 Three independent methods agree on the two numbers checked below. Only 15 of
@@ -3099,11 +3100,11 @@ but NumPy.
     print(f"{'':<20}note   : the paper reports {claimed['gurobi_seconds']} s "
           f"for this solve and for the feasibility")
     print(f"{'':<20}         solve, which took {feasible['seconds']:.4f} s "
-          f"here; against Table VII's "
+          f"here; against Table VIII's "
           f"{HARDWARE['gurobi_time']} s")
     print(f"{'':<20}         on the QUBO form of the same instance. Wall time "
           f"is machine dependent")
-    print(f"{'':<20}         and is not asserted, here or in Table VII.")
+    print(f"{'':<20}         and is not asserted, here or in Table VIII.")
 
 
 # -----------------------------------------------------------------------------
@@ -3203,7 +3204,8 @@ def _width_energy(qubo, bits):
 
 def check_width_scaling(report, selected, series_sizes, deadline):
     report.section(
-        "Hidden-layer width sweep -- QUBO size, stored SA vectors, Z3",
+        "Table VI -- hidden-layer width sweep: QUBO size, stored SA "
+        "vectors, Z3",
         GROUP_WIDTH)
     report.note("""
 The width sweep holds the input and the perturbation budget fixed and widens
@@ -3739,7 +3741,7 @@ def main(argv=None):
         "the recorded Gurobi solver logs", not options.no_extract)
     hardware_available = ensure_archive(
         HARDWARE_ARCHIVE, HARDWARE_QUBO,
-        "the Table VII two-class hardware instance", not options.no_extract)
+        "the Table VIII two-class hardware instance", not options.no_extract)
     width_data_available = width_selected and ensure_archive(
         WIDTH_ARCHIVE, f"{width_dir(WIDTH_PUBLICATION_SERIES, 7)}/qubo.json",
         "the hidden-layer width sweep", not options.no_extract)
