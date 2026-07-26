@@ -53,6 +53,12 @@ The default needs nothing beyond this repository and the packages in
 requirements.txt: no GPU, no solver license, no network, no special hardware.
 It covers every instance and takes well under a minute.
 
+  Table II             The test accuracy and the test-set size of each trained
+                       network are read out of the Info.txt that ships beside
+                       its checkpoint, and the printed percentage is recomputed
+                       from the two counts. The training-set size is counted
+                       from the shipped DataLoader in data/datasets.tar.gz.
+
   Tables III, IV, VI   Each QUBO instance is rebuilt from scratch with the
                        authors' own builder, ``bnn_as_qubo.setup_optim_model``,
                        and the number of variables, the number of encoded
@@ -95,7 +101,19 @@ Table VII has no flag either: the two-class instance, all three archived solutio
 vectors and the authors' own notebooks ship in data/hardware_results.tar.gz, so
 the Gurobi, D-Wave and Fujitsu rows are re-evaluated by default and the SA row is
 re-run by default (a couple of seconds on that instance). Every cell of the table
-is therefore checked here without a license and without hardware.
+is therefore checked here without a license and without hardware. The coupling
+and coefficient statistics Section IV-B gives for that same instance are
+recomputed alongside it, as is Section IV-B's linear-constraint-form comparison:
+the feasible-perturbation count, d_min and the two archived vectors'
+perturbation sizes are asserted, and the solver runtimes that go with them are
+printed but never asserted, because wall time is machine dependent.
+
+One reported figure has no offline substitute and is not checked anywhere here.
+Table VII's 0.724 s for the quantum annealer, and the "~20 microseconds per
+shot" that follows from it, come from the run log of the D-Wave session. The
+archived DataFrame carries no timing metadata -- its columns are the 113 spins
+plus chain_break_fraction, energy and num_occurrences -- and hardware/Time/
+covers the Fujitsu row only. See README.md.
 
 Instance selection
 ------------------
@@ -108,7 +126,7 @@ Other options
 -------------
 
     --json PATH     also write a machine-readable report ('-' for stdout)
-    --no-extract    do not unpack data/qubo_and_networks.tar.gz automatically
+    --no-extract    do not unpack anything from data/ automatically
     --verbose       show the full output of the sub-checks
 """
 
@@ -171,6 +189,9 @@ PAPER = {
         "gurobi_score": 529,         # Table IV, Gurobi column
         "z3_result": "NR",           # Table V
         "d_min": 3,                  # Table V
+        "accuracy": 43,              # Table II, "Accuracy"
+        "train_total": 1380,         # Table II, "Total Train Data"
+        "test_total": 703,           # Table II, "Total Test Data"
     },
     7: {
         "arch": "63x7x10", "input_dim": 63,
@@ -178,6 +199,7 @@ PAPER = {
         "variables": 413, "constraints": 312, "offset": 2643,
         "fem_score": 2643, "sa_score": 2643, "gurobi_score": 2635,
         "z3_result": "NR", "d_min": 1,
+        "accuracy": 41, "train_total": 23995, "test_total": 6212,
     },
     11: {
         "arch": "127x7x10", "input_dim": 127,
@@ -185,6 +207,7 @@ PAPER = {
         "variables": 676, "constraints": 536, "offset": 8020,
         "fem_score": 8020, "sa_score": 8019, "gurobi_score": 8018,
         "z3_result": "NR", "d_min": 2,
+        "accuracy": 62, "train_total": 55196, "test_total": 9562,
     },
     28: {
         "arch": "1023x7x10", "input_dim": 1023,
@@ -192,6 +215,7 @@ PAPER = {
         "variables": 2235, "constraints": 1880, "offset": 1027318,
         "fem_score": 1027318, "sa_score": 1027316, "gurobi_score": 1027316,
         "z3_result": "NR", "d_min": 2,
+        "accuracy": 66, "train_total": 59986, "test_total": 10000,
     },
 }
 
@@ -247,6 +271,28 @@ HARDWARE = {
     "dwave_shots": 4000,
     "sa_constraints": 65,       # Table VII, Simulated Annealing
     "sa_time": 3.559,           # reported; machine dependent, so not asserted
+
+    # Section IV-B's account of WHY the quantum annealer does badly on this
+    # instance: it is dense and wide in coefficient range at the same time, and
+    # the two properties come from different parts of the construction. Every
+    # figure below is quoted from that paragraph and recomputed in
+    # check_hardware() from the pickled QUBO and constraint dictionaries.
+    "possible_couplings": 6328,     # C(113, 2)
+    "couplings": 1164,
+    "median_degree": 24,
+    "pegasus_couplers": 15,         # Boothby et al., a Pegasus qubit's degree
+    "min_coefficient": 1,
+    "max_coefficient": 332801,
+    "max_coupling": 262144,         # 512^2
+    "sign_layer_residuals": 3,      # the wide sign-layer sums
+    "sign_layer_support": 25,
+    "sign_layer_couplings": 900,    # 3 * C(25, 2)
+    "other_residuals": 62,          # 65 - 3
+    "other_max_coupling": 4,        # 2 * 2 * 2, from weights of at most 2
+    "budget_support": 15,
+    "budget_max_coupling": 2,       # 2 * 1 * 1, from unit weights
+    # "no returned sample kept all of its chains intact"
+    "dwave_intact_chain_samples": 0,
 }
 
 # Table VII's SA row is the one default check that runs a stochastic solver
@@ -311,8 +357,18 @@ def checkpoint_path(size):
             f"{PAPER[size]['input_dim']}.pth")
 
 
-def dataset_path(size):
-    return f"Dataset/{size}x{size}/Train.txt"
+def network_info_path(size):
+    """The Info.txt TrainingNN.py wrote next to the checkpoint.
+
+    Not the same file as info_path() above, which QUBOCreator.py wrote next to
+    the QUBO. This one records the architecture and the test-set accuracy line
+    that Table II reports.
+    """
+    return f"TrainedNN/{size}x{size}/{PAPER[size]['arch']}/Info.txt"
+
+
+def dataset_path(size, split="Train"):
+    return f"Dataset/{size}x{size}/{split}.txt"
 
 
 def instance_available(size):
@@ -351,6 +407,7 @@ NOT_RUN_STATUSES = (SKIPPED, UNAVAILABLE, TIMEOUT, INCONCLUSIVE, NOT_VERIFIABLE)
 # per check would be noise. Everything else emits the full quota.
 # -----------------------------------------------------------------------------
 
+GROUP_TABLE2 = "Table II          BNN accuracy and data set sizes"
 GROUP_STRUCTURE = "Tables III/IV/VI  QUBO structure"
 GROUP_FEM = "Table IV          FEM energies + reverse check"
 GROUP_Z3 = "Table V           Z3 SMT baseline"
@@ -360,14 +417,16 @@ GROUP_GUROBI = "Table IV          Gurobi column"
 GROUP_SA = "Table IV          SA column"
 GROUP_FEM_REPLAY = "Table IV          FEM solver replay"
 GROUP_HARDWARE = "Table VII         hardware results"
+GROUP_LINEAR = "Section IV-B      linear constraint form"
 
 # Groups that run without any opt-in flag. If one of these produces no PASS and
 # no FAIL at all, the run verified nothing it was supposed to verify and the
 # verdict is INCONCLUSIVE rather than PASS.
-DEFAULT_GROUPS = (GROUP_STRUCTURE, GROUP_FEM, GROUP_Z3, GROUP_DMIN,
-                  GROUP_GUROBI_LOGS, GROUP_HARDWARE)
+DEFAULT_GROUPS = (GROUP_TABLE2, GROUP_STRUCTURE, GROUP_FEM, GROUP_Z3,
+                  GROUP_DMIN, GROUP_GUROBI_LOGS, GROUP_HARDWARE, GROUP_LINEAR)
 
 # Entries owed per instance when the group can actually be attempted.
+QUOTA_TABLE2 = 3
 QUOTA_STRUCTURE = 9
 QUOTA_FEM = 3
 QUOTA_Z3 = 2
@@ -377,9 +436,17 @@ QUOTA_GUROBI = 1
 QUOTA_SA = 2          # the solver run, and the reverse check on the BNN
 QUOTA_FEM_REPLAY = 1
 # Table VII is a single instance, not one per size: 5 structural checks,
-# 3 Gurobi, 4 Fujitsu, 5 D-Wave and 3 SA. The Gurobi row owes one fewer than the
-# Fujitsu row because its runtime is machine dependent and is not asserted.
-QUOTA_HARDWARE = 20
+# 9 coefficient/coupling statistics from the Section IV-B discussion of that
+# same instance, 3 Gurobi, 4 Fujitsu, 6 D-Wave and 3 SA. The Gurobi row owes one
+# fewer than the Fujitsu row because its runtime is machine dependent and is not
+# asserted.
+QUOTA_HARDWARE = 30
+
+# Section IV-B's linear-constraint-form paragraph, on that same instance:
+# the feasible count and d_min from enumeration, the two archived vectors'
+# perturbation sizes, the Z3 witness and its proven minimum, and Gurobi's
+# minimum. Runtimes are reported next to these but never asserted.
+QUOTA_LINEAR = 7
 
 
 def expected_check_counts(sizes, missing, resources):
@@ -394,6 +461,8 @@ def expected_check_counts(sizes, missing, resources):
     n_present = len(present)
     n_absent = len(sizes) - n_present
     expected = {}
+
+    expected[GROUP_TABLE2] = QUOTA_TABLE2 * n_present + n_absent
 
     expected[GROUP_STRUCTURE] = QUOTA_STRUCTURE * n_present + n_absent
 
@@ -421,6 +490,12 @@ def expected_check_counts(sizes, missing, resources):
     expected[GROUP_FEM_REPLAY] = QUOTA_FEM_REPLAY * len(sizes)
 
     expected[GROUP_HARDWARE] = QUOTA_HARDWARE if resources["hardware"] else 1
+
+    # The linear form keeps its full quota whatever is installed: only two of
+    # its seven entries need z3-solver and only one needs Gurobi, and each of
+    # those leaves an UNAVAILABLE or SKIPPED entry of its own rather than
+    # collapsing the group.
+    expected[GROUP_LINEAR] = QUOTA_LINEAR if resources["hardware"] else 1
 
     return expected
 
@@ -1079,6 +1154,104 @@ def dense_from_qubo(qubo, order):
         elif len(key) == 2:
             matrix[key[0], key[1]] = value
     return matrix
+
+
+# -----------------------------------------------------------------------------
+# Group 0 -- Table II: the trained networks and the data sets behind them
+# -----------------------------------------------------------------------------
+
+_ACCURACY = re.compile(
+    r"Accuracy:\s*(\d+)\s*/\s*(\d+)\s*\((\d+)%\)")
+
+
+def read_network_info(size):
+    """Parse TrainingNN.py's Info.txt: (correct, tested, printed percentage)."""
+    with open(network_info_path(size), encoding="utf-8") as handle:
+        text = handle.read()
+    match = _ACCURACY.search(text)
+    if not match:
+        raise ValueError(f"{network_info_path(size)}: no accuracy line")
+    return int(match.group(1)), int(match.group(2)), int(match.group(3))
+
+
+def dataset_length(size, split):
+    """How many examples the shipped DataLoader holds, or None if absent."""
+    path = dataset_path(size, split)
+    if not os.path.exists(path):
+        return None
+    import torch
+    return len(torch.load(path, weights_only=False).dataset)
+
+
+TABLE2_CHECK_NAMES = (
+    "Accuracy (Table II)",
+    "Total Test Data (Table II)",
+    "Total Train Data (Table II)",
+)
+assert len(TABLE2_CHECK_NAMES) == QUOTA_TABLE2
+
+
+def check_table2(report, sizes, missing):
+    report.section("Table II -- the trained networks: accuracy and data set "
+                   "sizes", GROUP_TABLE2)
+    report.note("""
+Table II reports, per architecture, the training and test set sizes and the
+test accuracy. Two of the three are recorded verbatim in the Info.txt that
+TrainingNN.py wrote next to each checkpoint, in the line
+
+    Test set: Avg. loss: ..., Accuracy: <correct>/<tested> (<percent>%)
+
+so the accuracy column and the Total Test Data column are read straight out of
+the shipped artifact. The percentage is not taken on trust either: it is
+recomputed from the two counts with the rounding PyTorch's own test loop uses,
+so a checkpoint whose Info.txt had been edited would show up here.
+
+Total Train Data is not recorded anywhere in TrainedNN/, so it is counted from
+the shipped DataLoader in data/datasets.tar.gz. Where that archive has not been
+unpacked the row says so rather than passing quietly.
+""")
+
+    for size in sizes:
+        claim = PAPER[size]
+        report.instance_header(size)
+        if size in missing or not os.path.exists(network_info_path(size)):
+            report.outcome(UNAVAILABLE, "Table II row",
+                           f"{network_info_path(size)} is not present",
+                           f"tar xzf {DATA_ARCHIVE}", size=size)
+            continue
+
+        correct, tested, printed = read_network_info(size)
+        # TrainingNN.py prints 100. * correct / tested with a '.0f' format.
+        recomputed = int(round(100.0 * correct / tested))
+        report.check(TABLE2_CHECK_NAMES[0], claim["accuracy"], printed,
+                     detail=f"Info.txt says {correct:,}/{tested:,}, which is "
+                            f"{100.0 * correct / tested:.2f}% and rounds to "
+                            f"{recomputed}%",
+                     ok=(claim["accuracy"] == printed == recomputed),
+                     size=size)
+        test_total = dataset_length(size, "Test")
+        detail = "the denominator of the Info.txt accuracy line"
+        if test_total is not None:
+            detail += (f"; Dataset/{size}x{size}/Test.txt holds "
+                       f"{test_total:,}")
+        report.check(TABLE2_CHECK_NAMES[1], claim["test_total"], tested,
+                     ok=(claim["test_total"] == tested
+                         and test_total in (None, tested)),
+                     detail=detail, size=size)
+
+        train_total = dataset_length(size, "Train")
+        if train_total is None:
+            report.outcome(
+                SKIPPED, TABLE2_CHECK_NAMES[2],
+                f"{dataset_path(size)} is not extracted, and the training set "
+                f"size is recorded nowhere else",
+                f"tar xzf {DATASET_ARCHIVE}", size=size,
+                claimed=claim["train_total"])
+        else:
+            report.check(TABLE2_CHECK_NAMES[2], claim["train_total"],
+                         train_total,
+                         detail=f"counted from {dataset_path(size)}",
+                         size=size)
 
 
 # -----------------------------------------------------------------------------
@@ -2328,6 +2501,120 @@ def check_hardware_sa(report, model, qubo, deadline):
                         f"same QUBO term count")
 
 
+def check_hardware_structure(report, pickled):
+    """Section IV-B's coupling and coefficient statistics for this instance.
+
+    The paragraph that explains the quantum annealer's result makes several
+    quantitative claims about the shape of this QUBO, and all of them come out
+    of the two dictionaries already loaded above: `qubo` for the couplings and
+    `constraints` for where they came from. Two conventions matter here.
+
+      * A "coupling" is an off-diagonal QUBO term. qubovert writes a linear term
+        as the diagonal entry (i, i), so the couplings are the keys with
+        i != j and the diagonal is excluded from every count below.
+      * The coupling a squared residual induces between two of its variables is
+        2 * w_i * w_j: expanding (sum_i w_i x_i + c)^2 gives each unordered pair
+        that coefficient. That is the arithmetic behind "weights that run to 512
+        produce couplings that run to 512^2", and it is what the last two checks
+        recompute rather than assume.
+    """
+    import statistics
+    from itertools import combinations
+
+    print("\n Section IV-B: why this instance is hard for an analog annealer")
+    qubo = pickled["qubo"]
+    couplings = {key: value for key, value in qubo.items() if key[0] != key[1]}
+    vertices = {index for key in qubo for index in key}
+    possible = len(vertices) * (len(vertices) - 1) // 2
+
+    report.check("Possible couplings, C(113, 2)",
+                 HARDWARE["possible_couplings"], possible)
+    report.check("Couplings present", HARDWARE["couplings"], len(couplings),
+                 detail=f"of {possible:,} possible, so the logical graph is "
+                        f"{len(couplings) / possible:.1%} dense")
+
+    degree = {vertex: 0 for vertex in vertices}
+    for left, right in couplings:
+        degree[left] += 1
+        degree[right] += 1
+    median_degree = statistics.median(degree.values())
+    report.check("Median logical degree", HARDWARE["median_degree"],
+                 int(median_degree),
+                 detail=f"against the {HARDWARE['pegasus_couplers']} couplers a "
+                        f"Pegasus qubit carries, so the embedding must chain; "
+                        f"degrees run {min(degree.values())} to "
+                        f"{max(degree.values())}")
+
+    magnitudes = [abs(value) for value in qubo.values() if value]
+    report.check("Smallest coefficient magnitude",
+                 HARDWARE["min_coefficient"], int(min(magnitudes)))
+    report.check("Largest coefficient magnitude",
+                 HARDWARE["max_coefficient"], int(max(magnitudes)),
+                 detail="five orders of magnitude above the smallest")
+    largest_coupling = int(max(abs(value) for value in couplings.values()))
+    report.check("Largest coupling, claimed to be 512^2",
+                 HARDWARE["max_coupling"], largest_coupling,
+                 ok=(largest_coupling == HARDWARE["max_coupling"] == 512 ** 2),
+                 detail=f"512^2 = {512 ** 2:,}; "
+                        f"{sum(1 for v in couplings.values() if abs(v) == largest_coupling)} "
+                        f"coupling(s) reach it")
+
+    # Where the couplings and the range come from: the wide sign-layer sums
+    # against everything else.
+    entries = pickled["constraints"]["eq"] + pickled["constraints"]["lt"]
+
+    def support(entry):
+        return [key[0] for key in entry if len(key) == 1]
+
+    def weights(entry):
+        return sorted((abs(entry[key]) for key in entry if len(key) == 1),
+                      reverse=True)
+
+    def induced_coupling(entry):
+        w = weights(entry)
+        return 2 * w[0] * w[1] if len(w) > 1 else 0
+
+    wide = [entry for entry in entries
+            if len(support(entry)) == HARDWARE["sign_layer_support"]]
+    pairs = set()
+    for entry in wide:
+        for pair in combinations(sorted(support(entry)), 2):
+            pairs.add(pair)
+    report.check(
+        f"Couplings from the {len(wide)} sign-layer residuals",
+        HARDWARE["sign_layer_couplings"], len(pairs),
+        ok=(len(wide) == HARDWARE["sign_layer_residuals"]
+            and len(pairs) == HARDWARE["sign_layer_couplings"]),
+        detail=f"{len(wide)} residuals over "
+               f"{HARDWARE['sign_layer_support']} variables each, "
+               f"{HARDWARE['sign_layer_residuals']} * "
+               f"C({HARDWARE['sign_layer_support']}, 2) = "
+               f"{len(pairs):,} of the {len(couplings):,} couplings; their "
+               f"weights are the place values 1..{int(max(weights(wide[0])))}")
+
+    budget = pickled["constraints"]["lt"][0]
+    others = [entry for entry in entries
+              if len(support(entry)) != HARDWARE["sign_layer_support"]]
+    report.check(
+        f"Largest coupling squared out of the other {len(others)} residuals",
+        HARDWARE["other_max_coupling"],
+        int(max(induced_coupling(entry) for entry in others)),
+        ok=(len(others) == HARDWARE["other_residuals"]
+            and max(induced_coupling(e) for e in others)
+            == HARDWARE["other_max_coupling"]),
+        detail=f"{len(others)} residuals carrying weights of at most "
+               f"{int(max(w for e in others for w in weights(e)))}, so squaring "
+               f"alone produces nothing wide")
+    report.check(
+        "Largest coupling squared out of the perturbation budget",
+        HARDWARE["budget_max_coupling"], int(induced_coupling(budget)),
+        ok=(len(support(budget)) == HARDWARE["budget_support"]
+            and set(weights(budget)) == {1}
+            and induced_coupling(budget) == HARDWARE["budget_max_coupling"]),
+        detail=f"a unit-weight constraint over {len(support(budget))} "
+               f"variables")
+
+
 def check_hardware(report, available, deadline):
     report.section("Table VII -- the two-class instance: hardware rows and SA",
                    GROUP_HARDWARE)
@@ -2393,6 +2680,8 @@ actually reported.
                  detail="so the target energy is "
                         f"{-HARDWARE['offset']:,}")
 
+    check_hardware_structure(report, pickled)
+
     # -- Fujitsu Digital Annealer ---------------------------------------------
     print("\n Digital Annealer (Fujitsu)")
     with open(HARDWARE_FUJITSU, "rb") as handle:
@@ -2457,6 +2746,15 @@ actually reported.
         not model.is_solution_valid(converted),
         f"{total - satisfied} of {total} constraints violated, "
         f"chain break fraction {best['chain_break_fraction']:.3f}")
+    # "no returned sample kept all of its chains intact". Counted over the whole
+    # archived batch rather than over the best sample alone, since that is what
+    # the sentence claims.
+    breaks = frame["chain_break_fraction"]
+    report.check("Samples with every chain intact",
+                 HARDWARE["dwave_intact_chain_samples"], int((breaks == 0).sum()),
+                 detail=f"of {len(frame):,} archived samples; the smallest "
+                        f"chain-break fraction observed is {breaks.min():.5f} "
+                        f"and the largest {breaks.max():.5f}")
 
     # -- simulated annealing, re-run rather than re-evaluated -----------------
     print("\n Simulated Annealing (re-run here; no sample was archived)")
@@ -2497,6 +2795,184 @@ actually reported.
 
 
 # -----------------------------------------------------------------------------
+# Group 10 -- Section IV-B: the same instance in its LINEAR constraint form
+# -----------------------------------------------------------------------------
+
+# The linear form solves in milliseconds, so a single timed run is dominated by
+# whatever the interpreter happened to be doing first: the very first Gurobi
+# model in a process carries the license handshake and the first NumPy-to-solver
+# hand-off. Best of a few runs is what the paper's figures are, and the timings
+# are only ever printed, never asserted.
+LINEAR_TIMING_REPEATS = 3
+
+LINEAR_CHECK_NAMES = (
+    "Feasible perturbations, by enumeration",
+    "Minimum adversarial distance d_min, by enumeration",
+    "Digital Annealer perturbation size",
+    "Gurobi vector perturbation size",
+    "Z3 witness satisfies every linear constraint",
+    "d_min proved by Z3 on the linear form",
+    "d_min proved by Gurobi on the linear form",
+)
+assert len(LINEAR_CHECK_NAMES) == QUOTA_LINEAR
+
+
+def check_linear_baseline(report, available, with_gurobi, deadline):
+    """Section IV-B's complete baselines on the two-class instance.
+
+    The heavy lifting is in linear_baseline.py, which is also runnable on its
+    own; this function is the assertion layer over it. Runtimes are printed and
+    never asserted, exactly as Table VII's Gurobi and SA runtimes are not: the
+    paper's figures for this paragraph were measured on one machine and a
+    reviewer's will differ. What IS asserted is the arithmetic those runtimes
+    accompany -- the feasible count, d_min, and the two archived vectors'
+    perturbation sizes -- and those are machine independent.
+    """
+    report.section("Section IV-B -- the same instance in its linear "
+                   "constraint form", GROUP_LINEAR)
+    report.note("""
+Table VII is five solvers applied to the QUBO. Section IV-B also reports the
+same instance solved in the LINEAR constraint form the QUBO was built from --
+the 64 equalities and the perturbation-budget inequality, handed to the solver
+directly rather than squared into a penalty. Both forms ship in the same
+pickle: constraints['eq'] and constraints['lt'] are that linear system, and
+every one of the 65 entries is strictly linear.
+
+That comparison is what rescopes the 168x figure of Table VII. It is a speedup
+over solvers given the QUBO encoding, not over the best available method for
+this instance: Gurobi handles the linear form in about a millisecond against the
+61.447 s of Table VII, and Z3 and plain enumeration are both well under a
+tenth of a second.
+
+Three independent methods agree on the two numbers checked below. Only 15 of
+the 113 variables are free -- 94 are determined by the equalities and 4 are
+slack ancillas the penalisation adds -- so exhaustive enumeration over the
+2^15 perturbation patterns is available as a third opinion alongside the two
+solvers, and it is the one that runs by default here, since it needs nothing
+but NumPy.
+""")
+    print()
+
+    if not available:
+        report.outcome(UNAVAILABLE, "Section IV-B, linear constraint form",
+                       f"{HARDWARE_DIR}/ is not present",
+                       f"tar xzf {HARDWARE_ARCHIVE}")
+        return
+
+    try:
+        import linear_baseline
+    except ImportError as error:  # pragma: no cover - defensive
+        report_all(report, UNAVAILABLE, LINEAR_CHECK_NAMES,
+                   f"linear_baseline.py could not be imported ({error!r})")
+        return
+
+    with open(HARDWARE_QUBO, "rb") as handle:
+        import pickle
+        pickled = pickle.load(handle)
+    form = linear_baseline.LinearForm(pickled)
+    claimed = linear_baseline.CLAIMED
+
+    print(f"   {len(form.equalities)} equalities + {len(form.inequalities)} "
+          f"budget inequality over {len(form.names)} named variables, all "
+          f"strictly linear")
+
+    # -- enumeration, the license-free third opinion --------------------------
+    enumeration = linear_baseline.enumerate_patterns(form)
+    report.check(LINEAR_CHECK_NAMES[0], claimed["feasible"],
+                 enumeration["feasible"],
+                 detail=f"of {enumeration['patterns']:,} patterns, in "
+                        f"{enumeration['seconds']:.3f} s (the paper reports "
+                        f"{claimed['enumeration_seconds']} s on an M1 Pro; "
+                        f"wall time is not asserted)")
+    report.check(LINEAR_CHECK_NAMES[1], claimed["d_min"],
+                 enumeration["d_min"],
+                 detail="the smallest number of perturbable pixels any "
+                        "feasible assignment flips")
+
+    # -- what the two archived vectors actually flipped -----------------------
+    counts = linear_baseline.flip_counts(pickled)
+    for name, label, key in (
+            (LINEAR_CHECK_NAMES[2], "Digital Annealer", "fujitsu_flips"),
+            (LINEAR_CHECK_NAMES[3], "Gurobi", "gurobi_flips")):
+        entry = counts.get(label)
+        if entry is None:
+            report.outcome(UNAVAILABLE, name,
+                           f"no archived {label} vector next to the instance",
+                           f"re-extract with: tar xzf {HARDWARE_ARCHIVE}",
+                           claimed=claimed[key])
+            continue
+        report.check(name, claimed[key], entry["flips"],
+                     detail=f"of {len(form.taus)} perturbation variables, "
+                            f"against d_min = {enumeration['d_min']}; H_0 is "
+                            f"identically zero, so every feasible assignment "
+                            f"carries the same energy and nothing in the QUBO "
+                            f"prefers a smaller perturbation")
+
+    # -- Z3 -------------------------------------------------------------------
+    z3_module, z3_error = optional_import("z3")
+    if z3_module is None:
+        report_all(report, UNAVAILABLE, LINEAR_CHECK_NAMES[4:6],
+                   f"z3-solver is not installed ({z3_error!r})",
+                   "pip install -r requirements.txt",
+                   claimed=claimed["d_min"])
+    else:
+        witness = linear_baseline.solve_z3(form, minimize=False,
+                                           repeats=LINEAR_TIMING_REPEATS)
+        report.assertion(
+            LINEAR_CHECK_NAMES[4],
+            witness["assignment"] is not None
+            and linear_baseline.check_assignment(form, witness["assignment"]),
+            f"{witness['status']}, {witness.get('distance')} pixels, "
+            f"{witness['seconds']:.3f} s to encode and solve (the paper "
+            f"reports {claimed['z3_witness_seconds']} s); re-checked against "
+            f"the pickled constraint dictionaries, not the matrices")
+        minimum = linear_baseline.solve_z3(form, minimize=True,
+                                           repeats=LINEAR_TIMING_REPEATS)
+        report.check(LINEAR_CHECK_NAMES[5], claimed["d_min"],
+                     minimum.get("distance"),
+                     detail=f"{minimum['seconds']:.3f} s to encode and solve "
+                            f"(the paper reports "
+                            f"{claimed['z3_minimum_seconds']} s); agrees with "
+                            f"the enumeration above")
+
+    # -- Gurobi ---------------------------------------------------------------
+    if not with_gurobi:
+        report.outcome(SKIPPED, LINEAR_CHECK_NAMES[6],
+                       "solving the linear form with Gurobi needs a license",
+                       "--with-gurobi", claimed=claimed["d_min"])
+        return
+    gurobi, gurobi_error = optional_import("gurobipy")
+    if gurobi is None:
+        report.outcome(UNAVAILABLE, LINEAR_CHECK_NAMES[6],
+                       f"gurobipy is not installed ({gurobi_error!r})",
+                       "pip install gurobipy", claimed=claimed["d_min"])
+        return
+    try:
+        feasible = linear_baseline.solve_gurobi(
+            form, minimize=False, repeats=LINEAR_TIMING_REPEATS)
+        smallest = linear_baseline.solve_gurobi(
+            form, minimize=True, repeats=LINEAR_TIMING_REPEATS)
+    except Exception as error:
+        report.outcome(UNAVAILABLE, LINEAR_CHECK_NAMES[6],
+                       f"Gurobi could not solve the linear form ({error!r})",
+                       "check the license with: python -c 'import gurobipy; "
+                       "gurobipy.Model()'", claimed=claimed["d_min"])
+        return
+    report.check(LINEAR_CHECK_NAMES[6], claimed["d_min"], smallest["distance"],
+                 detail=f"{smallest['seconds']:.4f} s to build and solve, "
+                        f"{smallest['solver_seconds']:.4f} s of that inside "
+                        f"the solver")
+    print(f"{'':<20}note   : the paper reports {claimed['gurobi_seconds']} s "
+          f"for this solve and for the feasibility")
+    print(f"{'':<20}         solve, which took {feasible['seconds']:.4f} s "
+          f"here; against Table VII's "
+          f"{HARDWARE['gurobi_time']} s")
+    print(f"{'':<20}         on the QUBO form of the same instance. Wall time "
+          f"is machine dependent")
+    print(f"{'':<20}         and is not asserted, here or in Table VII.")
+
+
+# -----------------------------------------------------------------------------
 # Data availability
 # -----------------------------------------------------------------------------
 
@@ -2525,6 +3001,33 @@ def ensure_archive(archive, marker, description, allow_extract):
     with tarfile.open(archive, "r:gz") as handle:
         extract_all(handle)
     return os.path.exists(marker)
+
+
+def ensure_datasets(sizes, allow_extract):
+    """Extract data/datasets.tar.gz if a selected instance's Dataset/ is absent.
+
+    Kept separate from ensure_data() because the marker cannot be the 5x5 files:
+    those are tracked in the repository, so they are present in a bare clone and
+    would make this look satisfied when the other three are still packed. The
+    test is per selected instance instead.
+
+    This archive is much the largest of the four (313 MB expanded against 138),
+    and until it was unpacked here three of Table II's rows and three of the
+    structure group's rows could not run. --quick selects only the 5x5, whose
+    Dataset/ is tracked, so it still never unpacks this.
+    """
+    absent = [size for size in sizes if not os.path.exists(dataset_path(size))]
+    if not absent:
+        return True
+    if not (allow_extract and os.path.exists(DATASET_ARCHIVE)):
+        return False
+    print(f" [setup] the {', '.join(f'{s}x{s}' for s in absent)} training and "
+          f"test sets not extracted; unpacking {DATASET_ARCHIVE}")
+    print(f" [setup] into the repository root (Dataset/; ~313 MB expanded, "
+          f"git-ignored)")
+    with tarfile.open(DATASET_ARCHIVE, "r:gz") as archive:
+        extract_all(archive)
+    return all(os.path.exists(dataset_path(size)) for size in sizes)
 
 
 def ensure_data(sizes, allow_extract):
@@ -2582,7 +3085,7 @@ def parse_arguments(argv):
     parser.add_argument("--json", metavar="PATH",
                         help="write a machine-readable report ('-' for stdout)")
     parser.add_argument("--no-extract", action="store_true",
-                        help="do not unpack data/qubo_and_networks.tar.gz")
+                        help="do not unpack anything from data/")
     parser.add_argument("--verbose", action="store_true",
                         help="show the full output of the sub-checks")
     options = parser.parse_args(argv)
@@ -2670,6 +3173,16 @@ def main(argv=None):
         if os.path.exists(DATA_ARCHIVE):
             print(f"                   Unpack it with: tar xzf {DATA_ARCHIVE}")
 
+    datasets_available = ensure_datasets(sizes, not options.no_extract)
+    if not datasets_available:
+        print(f" NOTE            : the training sets are not unpacked; "
+              f"Table II's Total Train Data rows and the")
+        print(f"                   structure group's training-set cross-check "
+              f"are reported as SKIPPED.")
+        if os.path.exists(DATASET_ARCHIVE):
+            print(f"                   Unpack them with: "
+                  f"tar xzf {DATASET_ARCHIVE}")
+
     gurobi_logs_available = ensure_archive(
         GUROBI_LOG_ARCHIVE, GUROBI_LOG_PATTERN.format(size=5),
         "the recorded Gurobi solver logs", not options.no_extract)
@@ -2691,6 +3204,7 @@ def main(argv=None):
     }
     expected = expected_check_counts(sizes, missing, resources)
 
+    check_table2(report, sizes, missing)
     check_structure(report, sizes, missing)
     check_fem_solutions(report, sizes, missing)
     check_z3(report, sizes, missing, deadline)
@@ -2702,6 +3216,8 @@ def main(argv=None):
     check_sa(report, sizes, missing, with_sa, options.sa_seeds, opt_in_deadline)
     check_fem_replay(report, sizes, missing, with_fem, opt_in_deadline)
     check_hardware(report, hardware_available, deadline)
+    check_linear_baseline(report, hardware_available, with_gurobi,
+                          opt_in_deadline)
 
     result, status_code = report.summary(time.time() - started, expected)
 
