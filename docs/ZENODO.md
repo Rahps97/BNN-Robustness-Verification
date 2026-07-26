@@ -182,12 +182,28 @@ prefer the link to pin the exact release, change it to
 `https://github.com/Rahps97/BNN-Robustness-Verification/tree/v1.0.0` before cutting the
 release.
 
-ORCIDs: only Zheng Zhang's (`0000-0002-2292-0030`, confirmed against his ORCID
-employment record at UCSB ECE) is asserted. There is exactly one ORCID record in the
-registry under the name *Seyran Saeedi* — `0000-0003-1646-3870` — but it lists only a
-Virginia Commonwealth University affiliation and has no works attached, so it is left
-out rather than guessed; add it if it is yours. No ORCID could be found for Rahul Singh
-at UCSB. Adding either later is a metadata edit and does not change the DOI.
+ORCIDs: two of the three are asserted.
+
+- Zheng Zhang — `0000-0002-2292-0030`, confirmed against his ORCID employment record at
+  UCSB ECE.
+- Seyran Saeedi — `0000-0003-1646-3870`, **confirmed by the author**. The registry record
+  lists a Virginia Commonwealth University affiliation, which is a previous position; the
+  paper lists her as independent with the work performed at UCSB, and the affiliation
+  strings in `.zenodo.json` and `CITATION.cff` say so. An ORCID iD identifies the person,
+  not the affiliation, so the mismatch is expected and is not an error.
+- Rahul Singh — no ORCID could be found; the creator entry deliberately carries none.
+
+Adding one later is a metadata edit and does not change the DOI.
+
+Field shapes differ between the two files and both are required as written:
+`.zenodo.json` takes the **bare** iD (`0000-0003-1646-3870`) — Zenodo's legacy
+deserializer passes it through `idutils.normalize_orcid`, which strips a URL prefix
+anyway, but bare is the form the rest of the file already uses. `CITATION.cff` takes the
+**full URL** (`https://orcid.org/0000-0003-1646-3870`), which CFF 1.2.0 enforces by
+regex. Both files were re-validated after the change: `cffconvert --validate` reports
+CFF 1.2.0 valid, and `.zenodo.json` passes a structural check against the legacy
+deserializer's expectations (allowed top-level keys, `is_orcid` on every creator,
+`detect_identifier_schemes` on every related identifier, `funder::award` grant split).
 
 ---
 

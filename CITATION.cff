@@ -31,6 +31,7 @@ authors:
     affiliation: >-
       Independent researcher; work performed at University of California, Santa
       Barbara
+    orcid: https://orcid.org/0000-0003-1646-3870
   - family-names: Zhang
     given-names: Zheng
     affiliation: University of California, Santa Barbara
@@ -79,6 +80,7 @@ preferred-citation:
       affiliation: >-
         Independent researcher; work performed at University of California,
         Santa Barbara
+      orcid: https://orcid.org/0000-0003-1646-3870
     - family-names: Zhang
       given-names: Zheng
       affiliation: University of California, Santa Barbara
