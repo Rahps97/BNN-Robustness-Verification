@@ -176,10 +176,11 @@ MAX_COMBINATIONS_PER_LEVEL = 5_000_000
 
 Z3_TIMEOUT_SECONDS = 600.0
 
-# The opt-in solver checks would otherwise run for a day (Gurobi's early-stop
-# rule allows 10,000,000 non-improving nodes, and the paper's Gurobi runs were
-# stopped by hand after about that long). Unless --timeout says otherwise, each
-# opt-in check gets this bound, and exceeding it is TIMEOUT, never FAIL.
+# The opt-in solver checks would otherwise run for hours to a day: Gurobi's
+# early-stop rule allows 100,000 non-improving nodes on the two smaller instances
+# and 10,000,000 on the two larger ones, which is what the reported runs took 47
+# minutes to 18.7 hours to exhaust. Unless --timeout says otherwise, each opt-in
+# check gets this bound, and exceeding it is TIMEOUT, never FAIL.
 OPT_IN_DEFAULT_TIMEOUT_SECONDS = 900.0
 
 # SA.py's settings, so that --with-sa runs the same configuration. They are
@@ -1150,6 +1151,49 @@ GUROBI_BEST_RE = re.compile(
 GUROBI_COLUMNS_RE = re.compile(r"Optimize a model with .*?(\d+) columns")
 GUROBI_EXPLORED_RE = re.compile(
     r"^Explored (\d[\d,]*) nodes .*? in ([\d.]+) seconds", re.MULTILINE)
+# An improving incumbent in the branch-and-bound log, e.g.
+#   H19567 17187                    -8013.000000 -27407.343   242%   2.4   20s
+# The leading integer is the node count at which it was found.
+GUROBI_INCUMBENT_RE = re.compile(r"^[H*]\s*(\d+)\s+\d+\s", re.MULTILINE)
+
+
+def gurobi_span_tolerance(limit):
+    """How far past `limit` a no-improvement span may run and still match it.
+
+    The overshoot is the work still in flight when model.terminate() lands, so it
+    tracks the search rate rather than the limit; the four observed values are 22,
+    530, 1,161 and 1,805 nodes. One percent of the limit, floored at 10,000, keeps
+    all four comfortably inside while still separating 10^5 from 10^7.
+    """
+    return max(10_000, limit // 100)
+
+
+def shipped_no_impr_nodes():
+    """run_gurobi_all.DEFAULT_NO_IMPR_NODES, read from source.
+
+    Read rather than imported, because importing run_gurobi_all pulls in gurobipy
+    and this check must work without a license. Returns None if it cannot be read,
+    which is a failure of the check, not a fallback: the point is to test the
+    table the repository actually ships.
+    """
+    import ast
+    try:
+        tree = ast.parse(open("run_gurobi_all.py", encoding="utf-8").read())
+    except (OSError, SyntaxError):
+        return None
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+        if "DEFAULT_NO_IMPR_NODES" not in names:
+            continue
+        try:
+            table = ast.literal_eval(node.value)
+        except ValueError:
+            return None
+        if isinstance(table, dict):
+            return table
+    return None
 
 
 def parse_gurobi_log(path):
@@ -1160,16 +1204,23 @@ def parse_gurobi_log(path):
         return None
     columns = GUROBI_COLUMNS_RE.search(text)
     explored = GUROBI_EXPLORED_RE.search(text)
+    incumbents = [int(m.group(1)) for m in GUROBI_INCUMBENT_RE.finditer(text)]
+    nodes = int(explored.group(1).replace(",", "")) if explored else None
+    last_incumbent = incumbents[-1] if incumbents else None
     return {
         "best_objective": float(best.group(1)),
         "best_bound": float(best.group(2)),
         "gap_percent": float(best.group(3)),
         "variables": int(columns.group(1)) if columns else None,
-        "nodes": int(explored.group(1).replace(",", "")) if explored else None,
+        "nodes": nodes,
         "seconds": float(explored.group(2)) if explored else None,
         "interrupted": "Solve interrupted" in text,
         "time_limit_set": "Set parameter TimeLimit" in text,
         "proved_optimal": "Optimal solution found" in text,
+        "last_incumbent_node": last_incumbent,
+        "no_improvement_span": (nodes - last_incumbent
+                                if nodes is not None
+                                and last_incumbent is not None else None),
     }
 
 
@@ -1178,15 +1229,20 @@ def check_gurobi_logs(report, sizes, missing, available):
         "Table IV -- Gurobi column, from the recorded solver logs",
         "Table IV          Gurobi column (logs)")
     report.note("""
-The Gurobi runs behind Table IV took hours to a day each on a 32-core machine,
-so they are not rerun by default. Their solver logs are shipped instead, and
-the reported incumbent is read straight out of each one and compared with the
-table. Use --with-gurobi to re-solve from scratch instead.
+The Gurobi runs behind Table IV took 47 minutes to 18.7 hours each on a 32-core
+machine, so they are not rerun by default. Their solver logs are shipped
+instead, and the reported incumbent is read straight out of each one and
+compared with the table. Use --with-gurobi to re-solve from scratch instead.
 
-The logs also record how those runs ended, which the paper describes and this
-reproduces: every one says "Solve interrupted" with no TimeLimit parameter set,
-i.e. a manual stop, and none proves optimality. The remaining MIP gaps are
-printed below as context; they are not pass/fail criteria.
+The logs also record how those runs ended, and this reconstructs it. Every one
+says "Solve interrupted" with no TimeLimit parameter set, and none proves
+optimality. The stop was the early-stopping callback firing, not a hand
+interrupt: the no-improvement span -- nodes explored minus the node of the last
+improving incumbent -- lands just above the limit that was in force, the small
+overshoot being the in-flight nodes that drain after model.terminate(). That
+limit is 10^5 on 5x5 and 7x7 and 10^7 on 11x11 and 28x28, which is what
+run_gurobi_all.DEFAULT_NO_IMPR_NODES now carries; the check below is that the two
+agree. The remaining MIP gaps are printed as context, not as pass/fail criteria.
 """)
 
     if not available:
@@ -1198,6 +1254,8 @@ printed below as context; they are not pass/fail criteria.
                            f"tar xzf {GUROBI_LOG_ARCHIVE}", size=size,
                            claimed=-PAPER[size]["gurobi_score"])
         return
+
+    shipped_limits = shipped_no_impr_nodes()
 
     for size in sizes:
         claim = PAPER[size]
@@ -1230,7 +1288,7 @@ printed below as context; they are not pass/fail criteria.
             report.check("model size in the log", claim["variables"],
                          parsed["variables"], detail="columns", size=size)
         report.assertion(
-            "stopped by hand, not by a time limit",
+            "interrupted, with no time limit set",
             parsed["interrupted"] and not parsed["time_limit_set"],
             f"'Solve interrupted', no TimeLimit set", size=size)
         report.assertion(
@@ -1239,6 +1297,26 @@ printed below as context; they are not pass/fail criteria.
             f"MIP gap {parsed['gap_percent']:.4g}% remaining, "
             f"{parsed['nodes']:,} nodes in {parsed['seconds']:,.0f} s",
             size=size)
+        span = parsed["no_improvement_span"]
+        configured = (shipped_limits or {}).get(size)
+        label = "no-improvement span vs the shipped limit"
+        if configured is None:
+            report.assertion(
+                label, False,
+                "could not read DEFAULT_NO_IMPR_NODES from run_gurobi_all.py",
+                size=size)
+        elif span is None:
+            report.assertion(
+                label, False, "no incumbent line found in the log", size=size)
+        else:
+            overshoot = span - configured
+            report.assertion(
+                label,
+                0 <= overshoot < gurobi_span_tolerance(configured),
+                f"{parsed['nodes']:,} - {parsed['last_incumbent_node']:,} = "
+                f"{span:,} nodes without improvement, i.e. the configured "
+                f"{configured:,} plus {overshoot:,} drained after terminate()",
+                size=size)
 
 
 # -----------------------------------------------------------------------------
@@ -1249,10 +1327,12 @@ def check_gurobi(report, sizes, missing, enabled, deadline):
     report.section("Table IV -- Gurobi column (opt-in)",
                    "Table IV          Gurobi column")
     report.note("""
-Solves each shipped QUBO with Gurobi using run_gurobi_all.py's model and
-early-stopping callback. The reported runs were stopped manually after roughly
-a day, so a run here that reaches the reported energy confirms it, while one
-that falls short is inconclusive rather than a contradiction.
+Solves each shipped QUBO with Gurobi using run_gurobi_all.py's model, its
+early-stopping callback and its per-instance no-improvement limit (10^5 on 5x5
+and 7x7, 10^7 on 11x11 and 28x28 -- the values the reported runs used). Those
+runs took 47 minutes to 18.7 hours, so a run here that reaches the reported
+energy confirms it, while one that falls short is inconclusive rather than a
+contradiction.
 
 Two gaps are reported for every solver run below, and they answer different
 questions. The gap vs the paper's value is the reproduction question. The gap
@@ -1317,7 +1397,7 @@ violated encoded constraints, and near the optimum usually equals it.
         try:
             with captured(report.verbose):
                 energy, status, runtime = _gurobi_solve(
-                    run_gurobi_all, matrix, budget)
+                    run_gurobi_all, matrix, budget, size)
         except Exception as exc:
             message = str(exc)
             if ("size-limited" in message.lower()
@@ -1350,18 +1430,26 @@ violated encoded constraints, and near the optimum usually equals it.
             paper_energy=-float(claim["gurobi_score"]),
             target_energy=float(info["minimum_energy"]),
             energies=[energy], runtime=runtime, runs_label="runs",
-            hint=f"the paper's Gurobi runs were stopped by hand after about a "
-                 f"day; this one was bounded at {budget:.0f} s. Raise "
-                 f"--timeout, or run: python run_gurobi_all.py"
+            hint=f"the paper's Gurobi runs ran to their no-improvement limit, "
+                 f"47 minutes to 18.7 hours; this one was bounded at "
+                 f"{budget:.0f} s. Raise --timeout, or run: "
+                 f"python run_gurobi_all.py"
                  if budget else "python run_gurobi_all.py")
 
 
-def _gurobi_solve(module, matrix, budget):
-    """run_gurobi_all.solve_qubo_upper_tri with an optional native time limit."""
+def _gurobi_solve(module, matrix, budget, size):
+    """run_gurobi_all.solve_qubo_upper_tri with an optional native time limit.
+
+    The no-improvement limit is the per-instance one run_gurobi_all.py uses, so
+    that this reproduces the configuration behind the shipped log for `size`
+    rather than one blanket value; NO_IMPR_NODES still overrides it.
+    """
     import gurobipy as gp
 
+    limit = module.no_impr_nodes(size)
+
     if budget is None:
-        return module.solve_qubo_upper_tri(matrix, module.NO_IMPR_NODES)
+        return module.solve_qubo_upper_tri(matrix, limit)
 
     original = gp.Model
 
@@ -1372,7 +1460,7 @@ def _gurobi_solve(module, matrix, budget):
 
     gp.Model = TimeLimitedModel
     try:
-        return module.solve_qubo_upper_tri(matrix, module.NO_IMPR_NODES)
+        return module.solve_qubo_upper_tri(matrix, limit)
     finally:
         gp.Model = original
 

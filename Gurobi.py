@@ -10,6 +10,26 @@ InputDataSize = DataSize[InputSize]
 QUBOFolder = f"QUBO/{InputSize}x{InputSize}/{InputDataSize}x7x10/"
 Q = np.loadtxt(QUBOFolder + "QUBO_W.txt")  # upper-triangular QUBO matrix
 
+# The no-improvement limit the stagnation callback below enforces. It is NOT the
+# same for every instance: the published runs used 10^5 on 5x5 and 7x7 and 10^7 on
+# 11x11 and 28x28. This is recoverable from the shipped solver logs, because each
+# run ended when the callback fired, so
+#
+#     (nodes explored) - (node of the last improving incumbent)
+#
+# lands just above the limit that was in force -- the small overshoot being the
+# in-flight nodes that drain after model.terminate():
+#
+#     5x5      166,017 -    64,212 =    101,805   (10^5 +  1,805)
+#     7x7      131,629 -    31,607 =    100,022   (10^5 +     22)
+#     11x11 17,297,995 - 7,297,465 = 10,000,530   (10^7 +    530)
+#     28x28 10,169,478 -   168,317 = 10,001,161   (10^7 +  1,161)
+#
+# A single hardcoded 10^7 therefore reproduces only the two larger runs. See the
+# "Gurobi Solver" section of README.md.
+NoImprovementNodes = {5: 100_000, 7: 100_000, 11: 10_000_000, 28: 10_000_000}
+MaxNoImprovementNodes = NoImprovementNodes[InputSize]
+
 
 def early_stop_callback(model, where):
     """
@@ -39,7 +59,7 @@ def early_stop_callback(model, where):
 
 def solve_qubo_upper_tri(
     Q,
-    max_no_improvement_nodes=100,
+    max_no_improvement_nodes=MaxNoImprovementNodes,
     verbose=True,
 ):
     """
@@ -125,7 +145,10 @@ def solve_qubo_upper_tri(
     return x_opt, obj_val, m, runtime_sec
 
 # ---- run it on your QUBO ----
-x_opt, obj_val, model, runtime = solve_qubo_upper_tri(Q, max_no_improvement_nodes=10000000)
+print(f"{InputSize}x{InputSize}: stopping after "
+      f"{MaxNoImprovementNodes:,} non-improving nodes")
+x_opt, obj_val, model, runtime = solve_qubo_upper_tri(
+    Q, max_no_improvement_nodes=MaxNoImprovementNodes)
 
 print("Optimal objective:", obj_val)
 print("First 20 bits of x*:", x_opt)

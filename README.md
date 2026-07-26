@@ -30,10 +30,10 @@ Everything needed ships compressed in `data/` (5.8 MB in total), and `verify_pap
 | Table IV, FEM column | The FEM solution vectors in `FEM_best_configurations.txt` are evaluated against the shipped QUBO matrices as `x^T Q x`, and each is decoded into a perturbation and replayed through an independent NumPy forward pass of the BNN. |
 | Table V | The Z3 SMT baseline is re-run at each instance's recorded epsilon, and every witness is reverse-checked with that same independent forward pass. |
 | Table V, `d_min` | Recomputed twice per instance: by exhaustive enumeration and by a Z3 minimum-distance scan. |
-| Table IV, Gurobi column | The incumbent is read out of each recorded solver log and compared with the table, along with the fact that every run was stopped by hand rather than by a time limit and that none proved optimality. |
+| Table IV, Gurobi column | The incumbent is read out of each recorded solver log and compared with the table, along with the fact that no run proved optimality and that each was ended by the early-stopping callback rather than by a time limit — the no-improvement span in the log is checked against the limit `run_gurobi_all.py` ships for that instance. See *Gurobi Solver* below. |
 | Table VII | The two-class QUBO is rebuilt from the authors' pickled constraint dictionaries with the recipe in their own `Verify.ipynb`, and both hardware samples are re-evaluated against it: the Fujitsu solution attains the target energy exactly and satisfies all 65 encoded constraints in 0.366 s, and the best of D-Wave's 4,000 shots reaches −874,318, 356 above the target, satisfying 36 of 65. |
 
-Note that `E_off` is an **energy**, not a constraint count. Earlier versions of Tables III, IV and VI reported it in the *Total Constraints* column; `verify_paper.py` recomputes and reports the two separately so the correction can be checked directly. The same distinction applies to Table VII, whose *Constraints Satisfied* column prints 1,273 (the instance's f-term count) and 356 (an energy gap) rather than constraint counts; the instance has 65 encoded constraints in total, and the script prints the corrected figures next to the reported ones.
+Note that `E_off` is an **energy**, not a constraint count. Earlier versions of Tables III, IV and VI reported it in the *Total Constraints* column; `verify_paper.py` recomputes and reports the two separately so the correction can be checked directly. The same distinction applies to Table VII, whose *Constraints Satisfied* column prints 1,273 (`len(H.to_qubo())`, i.e. the instance's 1,272 QUBO terms plus the constant-offset entry) and 356 (an energy gap) rather than constraint counts; the instance has 65 encoded constraints in total, and the script prints the corrected figures next to the reported ones.
 
 ### Sample output
 
@@ -85,13 +85,13 @@ Note that `E_off` is an **energy**, not a constraint count. Earlier versions of 
  Table IV          FEM energies + reverse check     12 passed
  Table V           Z3 SMT baseline                  8 passed
  Table V           minimum adversarial distance     8 passed
- Table IV          Gurobi column (logs)             20 passed
+ Table IV          Gurobi column (logs)             24 passed
  Table IV          Gurobi column                    4 not run
  Table IV          SA column                        4 not run
  Table IV          FEM solver replay                4 not run
  Table VII         hardware results                 14 passed, 2 unavailable
 
- 95 passed, 0 failed, 15 not run (--with-fem, --with-gurobi, --with-sa), 2 unavailable
+ 99 passed, 0 failed, 15 not run (--with-fem, --with-gurobi, --with-sa), 2 unavailable
  elapsed: 23.6 s
 
  RESULT: PASS -- every check that was run reproduces the paper.
@@ -100,7 +100,7 @@ Note that `E_off` is an **energy**, not a constraint count. Earlier versions of 
 ===============================================================================
 ```
 
-The two `unavailable` rows are Table VII's Gurobi and SA entries, for which no solution vector was archived. The three structural rows shown as *not run* are the optional cross-check that the training set re-selects the same instance; that one needs `data/datasets.tar.gz` unpacked as well, and with it the run is 98 passed, 0 failed.
+The two `unavailable` rows are Table VII's Gurobi and SA entries, for which no solution vector was archived. The three structural rows shown as *not run* are the optional cross-check that the training set re-selects the same instance; that one needs `data/datasets.tar.gz` unpacked as well, and with it the run is 102 passed, 0 failed.
 
 ### Outcomes
 
@@ -454,6 +454,60 @@ python Gurobi.py
 
 This script solves the generated QUBO using Gurobi. A valid Gurobi license is required. Installing `gurobipy` alone is not sufficient; users must obtain and activate an appropriate Gurobi license before running this solver.
 
+##### The stopping rule, and why it differs per instance
+
+No time limit, node limit or MIP gap is set. The runs are ended by a stagnation
+callback: it records the node index of the most recent *improving* incumbent, and
+calls `model.terminate()` once the search has gone `max_no_improvement_nodes`
+nodes past it. The quantity that matters is therefore the **no-improvement span**,
+not the total node count — a run can explore far more nodes than the limit, as
+long as it keeps finding better incumbents.
+
+That limit is **not the same for every instance**, and the reported runs used two
+different values:
+
+| Instance | No-improvement limit |
+| --- | --- |
+| 5x5 | 100,000 (10^5) |
+| 7x7 | 100,000 (10^5) |
+| 11x11 | 10,000,000 (10^7) |
+| 28x28 | 10,000,000 (10^7) |
+
+This is recoverable from the shipped logs in `data/gurobi_logs.tar.gz`. Each one
+ends in `Solve interrupted` with no `TimeLimit` set, i.e. the callback fired, so
+subtracting the node index on the last `H` incumbent line from the `Explored ...
+nodes` total gives the span that triggered it. Each span lands just *above* a
+round threshold, the excess being the in-flight nodes that drain between
+`model.terminate()` and the solver actually stopping:
+
+| Instance | Explored | Last improving incumbent | Span | Threshold + overshoot |
+| --- | --- | --- | --- | --- |
+| 5x5 | 166,017 | 64,212 | 101,805 | 10^5 + 1,805 |
+| 7x7 | 131,629 | 31,607 | 100,022 | 10^5 + 22 |
+| 11x11 | 17,297,995 | 7,297,465 | 10,000,530 | 10^7 + 530 |
+| 28x28 | 10,169,478 | 168,317 | 10,001,161 | 10^7 + 1,161 |
+
+Note the 11x11 row in particular: 17.3 million nodes explored is well above 10^7,
+so a reading based on the node total alone would wrongly conclude that a 10^7 rule
+could not have fired.
+
+A single hardcoded limit therefore cannot reproduce all four runs. `Gurobi.py`
+selects it from `NoImprovementNodes[InputSize]` and `run_gurobi_all.py` from
+`DEFAULT_NO_IMPR_NODES[size]`, both defaulting to the table above.
+`verify_paper.py` re-derives each span from the shipped log and checks it against
+`run_gurobi_all.py`'s table, so the two cannot drift apart unnoticed.
+
+To force one value across every instance instead — for a quick smoke test, say —
+set `NO_IMPR_NODES`:
+
+```bash
+NO_IMPR_NODES=100000 python run_gurobi_all.py       # all four at 10^5
+```
+
+Reproducing the reported runs still takes 47 minutes to 18.7 hours per instance on
+32 cores, and none of them proves optimality: all four are reported incumbents
+with MIP gaps of 31.8% to 212.6% remaining.
+
 #### Simulated-Annealing Solver
 
 ```bash
@@ -559,6 +613,8 @@ All parameters are plain module-level constants; there is no configuration file.
 | Penalty weights in the QUBO | `QUBOCreator.py` | `args.LAMBDA` |
 | QUBO objective / bound constraint | `QUBOCreator.py` | `args.objective`, `args.include_perturbation_bound_constraint` |
 | Argmax tie-breaking in the QUBO | `get_args.py` | `args.argmax_tie_aware`, or the `BNN_ARGMAX_TIE_AWARE` environment variable (default off) |
+| Gurobi no-improvement limit | `Gurobi.py` | `NoImprovementNodes[InputSize]` (10^5 for 5x5/7x7, 10^7 for 11x11/28x28) |
+| | `run_gurobi_all.py` | `DEFAULT_NO_IMPR_NODES[size]`, or `NO_IMPR_NODES` environment variable to force one value everywhere |
 | SA reads, sweeps, schedule | `SA.py` | `NUM_READS`, `NUM_SWEEPS`, `beta_schedule_type` argument |
 | Repeated-SA settings | `SA_repeated.py` | `NUM_REPETITIONS`, `SEEDS`, `NUM_READS`, `NUM_SWEEPS`, `BETA_SCHEDULE_TYPE` |
 | FEM search budget | `FEM.py` | `total_rounds`, `search_precision`, `N_step`, `batch` (inside `__main__`) |

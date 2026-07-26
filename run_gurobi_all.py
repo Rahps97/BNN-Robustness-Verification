@@ -9,9 +9,17 @@ Usage (from the repository root, with the Dataset/QUBO/TrainedNN folders present
 
     python run_gurobi_all.py                 # all four instances
     python run_gurobi_all.py 5 7             # only 5x5 and 7x7
-    NO_IMPR_NODES=100000 python run_gurobi_all.py
+    NO_IMPR_NODES=100000 python run_gurobi_all.py    # one limit for every instance
 
 A valid Gurobi license is required.
+
+Early stopping
+--------------
+The callback stops the search after a fixed number of nodes without an incumbent
+improvement. That number is per-instance, because the published runs were not all
+made with the same one: 10^5 for 5x5 and 7x7, 10^7 for 11x11 and 28x28. See
+DEFAULT_NO_IMPR_NODES below for how that is read back out of the shipped logs.
+Setting NO_IMPR_NODES forces a single value across all four.
 
 Interpreting the output
 -----------------------
@@ -34,7 +42,34 @@ import gurobipy as gp
 from gurobipy import GRB
 
 INPUT_DIM = {5: 31, 7: 63, 11: 127, 28: 1023}
-NO_IMPR_NODES = int(os.environ.get("NO_IMPR_NODES", 10_000_000))
+
+# The no-improvement limit the callback enforces, per instance. The published runs
+# did not all use the same one: 10^5 on 5x5 and 7x7, 10^7 on 11x11 and 28x28. Each
+# shipped solver log ends with "Solve interrupted" and no TimeLimit set, i.e. the
+# callback fired, so the limit that was in force is recoverable as
+#
+#     (nodes explored) - (node of the last improving "H" incumbent line)
+#
+# which lands just above it -- the overshoot is the in-flight work that drains
+# after model.terminate() is called:
+#
+#     5x5      166,017 -    64,212 =    101,805   (10^5 +  1,805)
+#     7x7      131,629 -    31,607 =    100,022   (10^5 +     22)
+#     11x11 17,297,995 - 7,297,465 = 10,000,530   (10^7 +    530)
+#     28x28 10,169,478 -   168,317 = 10,001,161   (10^7 +  1,161)
+#
+# See the "Gurobi Solver" section of README.md.
+DEFAULT_NO_IMPR_NODES = {5: 100_000, 7: 100_000, 11: 10_000_000, 28: 10_000_000}
+
+# NO_IMPR_NODES forces one value across every instance, overriding the table above.
+NO_IMPR_NODES_OVERRIDE = os.environ.get("NO_IMPR_NODES")
+
+
+def no_impr_nodes(size):
+    """The no-improvement node limit to use for `size`, honouring NO_IMPR_NODES."""
+    if NO_IMPR_NODES_OVERRIDE not in (None, ""):
+        return int(NO_IMPR_NODES_OVERRIDE)
+    return DEFAULT_NO_IMPR_NODES[size]
 
 
 def early_stop_callback(model, where):
@@ -105,10 +140,14 @@ def main():
             print(f"[skip] {folder} not found")
             continue
 
-        print(f"\n=== {size}x{size} ({d}x7x10) ===", flush=True)
+        limit = no_impr_nodes(size)
+        print(f"\n=== {size}x{size} ({d}x7x10) === "
+              f"stopping after {limit:,} non-improving nodes"
+              + ("" if NO_IMPR_NODES_OVERRIDE in (None, "")
+                 else " (NO_IMPR_NODES override)"), flush=True)
         Q = np.loadtxt(folder + "QUBO_W.txt")
         target = read_target_energy(folder)
-        obj_val, status, runtime = solve_qubo_upper_tri(Q, NO_IMPR_NODES)
+        obj_val, status, runtime = solve_qubo_upper_tri(Q, limit)
 
         row = {
             "instance": f"{size}x{size}",
@@ -123,7 +162,7 @@ def main():
                 if (obj_val is not None and target is not None) else None,
             "gurobi_status": int(status),
             "runtime_sec": round(runtime, 3),
-            "no_improvement_nodes": NO_IMPR_NODES,
+            "no_improvement_nodes": limit,
         }
         results.append(row)
         print(json.dumps(row, indent=2), flush=True)
