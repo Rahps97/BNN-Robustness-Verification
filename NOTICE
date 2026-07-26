@@ -70,7 +70,7 @@ in requirements.txt are ordinary runtime dependencies, installed by pip and not
 redistributed here, and impose no conditions on this repository:
 
   Apache-2.0        qubovert, dimod, dwave-samplers (and the rest of Ocean)
-  BSD-3-Clause      torch, torchvision, numpy, scipy, scikit-learn
+  BSD-3-Clause      torch, torchvision, numpy, scipy, pandas
   MIT               z3-solver
   MPL-2.0 / MIT     tqdm
   PSF-style         matplotlib

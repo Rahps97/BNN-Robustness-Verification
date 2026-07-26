@@ -173,7 +173,7 @@ tar xzf data/datasets.tar.gz            # only needed to rerun QUBOCreator.py
 
 They extract into the repository root at the paths every script already expects (`QUBO/7x7/...`, not `data/QUBO/7x7/...`). `QUBO/` and `Dataset/` expand to about 138 MB and 313 MB of dense text, which is why they ship compressed and why the expanded paths are git-ignored. The 5x5 files are tracked in the repository and are byte-identical to their copies in the archives, so extracting over them changes nothing and `git status` stays clean.
 
-The two notebooks inside `hardware_results.tar.gz` are the authors' own artifacts, kept for provenance — they show what was actually run on the hardware and how the SA row was produced. They are not the verification path: `verify_paper.py` does all of it, needs no Jupyter, and does not read them. The only edit made to either is in `SA_Verify.ipynb`, whose SA import was `from neal import SimulatedAnnealingSampler`; `neal` was folded into `dwave-samplers`, which is what `requirements.txt` pins, so the line now reads `from dwave.samplers import SimulatedAnnealingSampler`. The stored cell outputs are the authors' original ones.
+The two notebooks inside `hardware_results.tar.gz` are the authors' own artifacts, kept for provenance — they show what was actually run on the hardware and how the SA row was produced. They are not the verification path: `verify_paper.py` does all of it, needs no Jupyter, and does not read them. The only edit made to either is in `SA_Verify.ipynb`, whose SA import was `from neal import SimulatedAnnealingSampler`; `neal` was folded into `dwave-samplers`, which is what `requirements.txt` pins, so the line now reads `from dwave.samplers import SimulatedAnnealingSampler`. The stored cell outputs are the authors' original ones. Note that `Verify.ipynb` covers the Fujitsu sample only, despite extracting next to `hardware/Dwave/`: it reads the Fujitsu solution and timing from `hardware/Result/` and `hardware/Time/` and never opens the D-Wave DataFrame. The D-Wave sample is checked by `verify_paper.py` instead.
 
 ---
 
@@ -826,6 +826,8 @@ The archival DOI has not been minted yet. `.zenodo.json` and `CITATION.cff` hold
 | Data | CC BY 4.0 | [`LICENSE-DATA`](LICENSE-DATA) |
 | Two Apache-2.0 derived functions | Apache-2.0 | [`NOTICE`](NOTICE) |
 
+**These terms are provisional until a release is tagged.** MIT and CC BY 4.0 are the intended licences and are what the repository is offered under today, but they are still pending written confirmation by all three authors and by their institution: the authors are UCSB-affiliated and the work is funded by NSF 2311295 and DOE DE-SC0021323, so the copyright holder line in `LICENSE` is being confirmed as well. Nothing above is settled enough to rely on for a permanent record — treat the grant as final only once this repository carries a tagged release, because the licence files inside an archived snapshot cannot be changed afterwards.
+
 "Data" means `Dataset/`, `QUBO/`, `TrainedNN/`, `FEM_best_configurations.txt`, `FEM_HYPERPARAMETERS.md` and the four archives in `data/` — the binarized MNIST subsets, the QUBO instances, the trained checkpoints, the recorded Gurobi logs and the Fujitsu and D-Wave samples. Everything executable is MIT, including the two notebooks that ship inside `data/hardware_results.tar.gz`.
 
 Two licences rather than one because MIT is written for software and reads badly over a directory of `.txt` matrices, and because the conventional split for a code-plus-data release is a permissive software licence next to a Creative Commons data licence. Creative Commons itself recommends against putting CC licences on code, and Springer Nature's own licence chooser offers exactly this pairing. Neither licence is more restrictive than the other in practice: both permit commercial use, modification and redistribution, and both ask only for attribution.
@@ -840,7 +842,7 @@ MNIST was never released under an explicit licence. Its original distribution po
 
 ### Dependencies
 
-Every runtime dependency is permissively licensed and none constrains this repository: Apache-2.0 (`qubovert`, `dimod`, `dwave-samplers` and the rest of Ocean), BSD-3-Clause (`torch`, `torchvision`, `numpy`, `scipy`, `scikit-learn`), MIT (`z3-solver`), MPL-2.0 (`tqdm`, used unmodified, and MPL-2.0 is file-level copyleft that does not reach a larger work) and matplotlib's PSF-style licence. `gurobipy` is a proprietary client, is not redistributed here, and is not needed to reproduce any reported number.
+Every runtime dependency is permissively licensed and none constrains this repository: Apache-2.0 (`qubovert`, `dimod`, `dwave-samplers` and the rest of Ocean), BSD-3-Clause (`torch`, `torchvision`, `numpy`, `scipy`, `pandas`), MIT (`z3-solver`), MPL-2.0 (`tqdm`, used unmodified, and MPL-2.0 is file-level copyleft that does not reach a larger work) and matplotlib's PSF-style licence. `gurobipy` is a proprietary client, is not redistributed here, and is not needed to reproduce any reported number.
 
 ### The Free Energy Machine implementation
 
