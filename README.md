@@ -19,7 +19,7 @@ The reproducibility work described here lives on the `fix/reproducibility-and-cp
 git clone -b fix/reproducibility-and-cpu-support https://github.com/seyrans/BNN-Robustness-Verification.git && cd BNN-Robustness-Verification
 ```
 
-That is the whole procedure. It runs **102 checks** over **all four instances** (5x5, 7x7, 11x11, 28x28), takes **about 20 to 25 seconds** once the archives are unpacked, and needs **no GPU, no solver license, no network access and no annealing hardware**. Every check prints its own pass/fail line, and the script exits non-zero if any reported number fails to reproduce.
+That is the whole procedure. It runs **102 checks** over **all four instances** (5x5, 7x7, 11x11, 28x28), takes **about 20 to 25 seconds** once the archives are unpacked, and needs **no GPU, no solver license, no network access and no annealing hardware**. Every check prints its own pass/fail line, and the script exits non-zero if any reported number fails to reproduce — or if too little ran for the report to mean anything. See *Verdict and exit status* below.
 
 **Tables III to VII are covered, with two exceptions noted below.** That includes the hardware rows of Table VII: the two-class instance, both hardware samples and the recorded Gurobi solver logs ship alongside the QUBOs, so a reviewer can re-evaluate them without any hardware or license.
 
@@ -39,7 +39,7 @@ Everything needed ships compressed in `data/` (5.8 MB in total), and `verify_pap
 | Table IV, FEM column | The FEM solution vectors in `FEM_best_configurations.txt` are evaluated against the shipped QUBO matrices as `x^T Q x`, and each is decoded into a perturbation and replayed through an independent NumPy forward pass of the BNN. |
 | Table V | The Z3 SMT baseline is re-run at each instance's recorded epsilon, and every witness is reverse-checked with that same independent forward pass. |
 | Table V, `d_min` | Recomputed twice per instance: by exhaustive enumeration and by a Z3 minimum-distance scan. |
-| Table IV, Gurobi column | The incumbent is read out of each recorded solver log and compared with the table, along with the fact that no run proved optimality and that each was ended by the early-stopping callback rather than by a time limit — the no-improvement span in the log is checked against the limit `run_gurobi_all.py` ships for that instance. See *Gurobi Solver* below. |
+| Table IV, Gurobi column | The incumbent is read out of each recorded solver log and compared with the table, along with the fact that no run proved optimality and that each was ended by the early-stopping callback rather than by a time limit — the no-improvement span in the log is checked against the limit `run_gurobi_all.py` ships for that instance. The reported energy score is then reached by a second, independent route, as the FEM column is: `dE` is taken against the `Minimum Energy` recorded in that instance's own `Info.txt`, so the score check fails if the shipped instance and the reported number disagree even when the log itself reads exactly as published. See *Gurobi Solver* below. |
 | Table VII | The two-class QUBO is rebuilt from the authors' pickled constraint dictionaries with the recipe in their own `Verify.ipynb`, and both hardware samples are re-evaluated against it: the Fujitsu solution attains the target energy exactly and satisfies all 65 encoded constraints in 0.366 s, and the best of D-Wave's 4,000 shots reaches −874,318, 356 above the target, satisfying 36 of 65. The SA row has no archived vector, so simulated annealing is re-run on the same instance and reaches −874,674 with 65 of 65 in about 2.3 s. Only the Gurobi cell is reported `UNAVAILABLE` — see above for why. |
 
 Note that `E_off` is an **energy**, not a constraint count. Earlier versions of Tables III, IV and VI reported it in the *Total Constraints* column; `verify_paper.py` recomputes and reports the two separately so the correction can be checked directly. The same distinction applies to Table VII, whose *Constraints Satisfied* column prints 1,273 (`len(H.to_qubo())`, i.e. the instance's 1,272 QUBO terms plus the constant-offset entry) and 356 (an energy gap) rather than constraint counts; the instance has 65 encoded constraints in total, and the script prints the corrected figures next to the reported ones.
@@ -111,11 +111,14 @@ Note that `E_off` is an **energy**, not a constraint count. Earlier versions of 
  102 passed, 0 failed, 15 not run (--with-fem, --with-gurobi, --with-sa), 1 unavailable
  elapsed: 25.9 s
 
- RESULT: PASS -- every check that was run reproduces the paper.
-         16 check(s) were NOT run and are therefore NOT verified; see the
-         reasons above. Do not read them as confirmed.
+ 16 check(s) were NOT run and are therefore NOT verified; see the reasons
+ above. Do not read them as confirmed.
+
+ RESULT: PASS -- every check that was run reproduces the paper. (exit 0)
 ===============================================================================
 ```
+
+The caveats print **above** the verdict deliberately, so that the last line of the report is never a bare `PASS` sitting on top of the reasons it should be read with.
 
 The single `unavailable` row is Table VII's Gurobi cell, for which no solution vector was archived and which cannot be re-run without a license — see above for what that does and does not mean. The three structural rows shown as *not run* are the optional cross-check that the training set re-selects the same instance; that one needs `data/datasets.tar.gz` unpacked as well, and with it the run is 105 passed, 0 failed, still well under a minute.
 
@@ -128,12 +131,26 @@ A check is never silently omitted. Every row carries one of:
 | Outcome | Meaning |
 | --- | --- |
 | `PASS` | recomputed, and it matches the paper |
-| `FAIL` | recomputed, and it does **not** match the paper (the only outcome that makes the exit status non-zero) |
+| `FAIL` | recomputed, and it does **not** match the paper |
 | `SKIPPED` | not requested; the row states the flag that would run it |
 | `UNAVAILABLE` | cannot be run here: no license, no data, no hardware |
 | `TIMEOUT` | started but exceeded `--timeout` |
 | `INCONCLUSIVE` | ran, but the solver is stochastic and fell short; neither confirms nor refutes the reported number |
 | `NOT VERIFIABLE` | no offline substitute exists at all; defined by the harness but not currently emitted — Table VII's one uncheckable cell reports `UNAVAILABLE` instead |
+
+"Never silently omitted" is enforced rather than asserted. Each check group declares up front how many rows it must produce for the selected instances, flags and available resources, and the script compares that with what it actually recorded. A check that cannot run has to leave a `SKIPPED`, `UNAVAILABLE`, `TIMEOUT` or `INCONCLUSIVE` row behind; if any check disappears instead, the run ends in `RESULT: HARNESS ERROR` rather than reporting a smaller pass count as though nothing had happened.
+
+### Verdict and exit status
+
+| Verdict | Exit | When |
+| --- | --- | --- |
+| `RESULT: PASS` | 0 | at least one check ran, and none failed |
+| `RESULT: FAIL` | 1 | a reported number did not reproduce |
+| *(no report)* | 2 | bad command line; `argparse` prints usage. No verdict uses this status, because `argparse` already owns it |
+| `RESULT: INCONCLUSIVE` | 3 | nothing failed, but too little ran to conclude anything: either no check ran at all, or a whole default check group produced neither a `PASS` nor a `FAIL` because its data, archive or dependency is absent |
+| `RESULT: HARNESS ERROR` | 4 | the run did not record the number of rows its own configuration calls for. This is a bug in `verify_paper.py`, not a result about the paper |
+
+**Exit 3 is the one to watch for in CI.** A clone whose `data/` archives are missing, or a pipeline step whose extraction quietly failed, has nothing to verify — so it must not report a green `PASS`. It reports `INCONCLUSIVE` and exits 3. Treat any non-zero status as a failed job; treat 1 and 3 as different problems.
 
 ### Options
 
@@ -146,12 +163,14 @@ A check is never silently omitted. Every row carries one of:
 | `--with-sa` | Table IV SA column, at `SA.py`'s settings | minutes for 5x5, hours for 28x28; `--sa-seeds N` sets the seed count (default 3) |
 | `--with-fem` | replays FEM at its recorded hyperparameters | seconds to minutes; stochastic, so a shortfall is `INCONCLUSIVE` |
 | `--everything` | all three of the above | — |
-| `--timeout S` | per-check wall-clock bound | exceeding it is `TIMEOUT`, never `FAIL` |
+| `--timeout S` | per-check wall-clock bound | exceeding it is `TIMEOUT`, never `FAIL`. `--timeout 0` means **no limit at all**, including for the opt-in checks, which otherwise get 900 s each. A negative value is rejected |
 | `--json PATH` | machine-readable report as well | `-` writes to stdout, after the human-readable report rather than instead of it, so pipe to a file and parse that rather than straight into `jq` |
 | `--verbose` | full output of every sub-check | — |
 | `--no-extract` | never unpack `data/` automatically | — |
 
 For the heuristic and early-terminated solvers, two different gaps are reported, because they answer different questions: the gap against **the paper's value** is the reproduction question, and the gap against **the target energy** is the feasibility question. They are not the same — Table IV's SA column is 8,019 for 11x11 against a target of 8,020. Since the objective `H_0` is identically zero, a gap of `g` above the target upper-bounds the number of violated encoded constraints.
+
+That same fact gives a lower bound, and it is checked rather than assumed: with `H_0` identically zero the QUBO is a sum of squared constraint residuals, so the target energy `-E_off` is a *proven* lower bound and nothing can score beneath it. A solver that comes back below the target has not found a better solution; the instance is wrong — a corrupted `QUBO_W.txt`, a mis-parsed `Info.txt`, or the wrong matrix. That is reported as `FAIL`, not as a very good `PASS`.
 
 ### The shipped data
 
@@ -435,6 +454,26 @@ and `torch.argmax` awards the prediction to a lower index — that is, a real
 adversarial example the strict QUBO rejects. In particular, with the flag on the
 `{0, 1}` perturbation of the 11x11 instance is admitted as a feasible solution at
 Hamming distance 2, and with the flag off it is not.
+
+`test_tie_aware_qubo.py` keeps that encoding honest, and needs nothing beyond
+`requirements.txt`:
+
+```bash
+python test_tie_aware_qubo.py
+```
+
+It builds the 11x11 instance both ways and asserts the invariant the correction
+turns on: the energy offset moves by exactly the true label index, because
+exactly the classes `k < gt` get the `-1` and each shifts the constant term by
+one. For 11x11 the label is 8, so the offset goes 8,020 → 8,028. It also asserts
+that nothing else moved — same variable count, same variable order, same
+constraint counts — and checks the 5x5 control, whose label is 0 and whose two
+encodings must therefore produce a bit-identical matrix. The third test pins the
+default: the strict encoding is what you get unless you ask otherwise.
+
+Note that the offset delta is the **label index**, not the number of `gt`-kind
+entries in `H.constraints`; that count is 1 on every instance, being the single
+`add_constraint_gt_zero` over the sign bits.
 
 ### 4. Solve the generated QUBO
 
