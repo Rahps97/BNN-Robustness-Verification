@@ -12,7 +12,7 @@ python -m pip install -r requirements.txt
 python verify_paper.py
 ```
 
-That is the whole procedure. It runs **99 checks** over **all four instances** (5x5, 7x7, 11x11, 28x28), takes **about 25 seconds** on a laptop, and needs **no GPU, no solver license, no network access and no annealing hardware**. Every check prints its own pass/fail line, and the script exits non-zero if any reported number fails to reproduce.
+That is the whole procedure. It runs **99 checks** over **all four instances** (5x5, 7x7, 11x11, 28x28), takes **about 24 seconds** on a laptop, and needs **no GPU, no solver license, no network access and no annealing hardware**. Every check prints its own pass/fail line, and the script exits non-zero if any reported number fails to reproduce.
 
 **Every number reported in the paper is checkable from this repository, with one exception.** Tables III to VII are all covered, including the D-Wave and Fujitsu hardware rows of Table VII: the two-class instance, both hardware samples and the recorded Gurobi solver logs ship alongside the QUBOs, so a reviewer can re-evaluate them without any hardware or license.
 
@@ -122,7 +122,7 @@ A check is never silently omitted. Every row carries one of:
 
 | Flag | Effect | Cost and requirements |
 | --- | --- | --- |
-| *(none)*, or `--all` | all four instances, everything that needs nothing external | 99 checks in ~25 s, CPU only |
+| *(none)*, or `--all` | all four instances, everything that needs nothing external | 99 checks in ~24 s, CPU only |
 | `--quick` | 5x5 only, plus the Table VII rows, which are instance-independent | 36 checks in ~2 s; runs on a bare clone, unpacking only the two small archives (0.2 MB) rather than the 138 MB one |
 | `--instance 5,7` | a chosen subset | — |
 | `--with-gurobi` | re-solve the Table IV Gurobi column from scratch, instead of reading the recorded logs | needs a Gurobi license; hours. The common size-limited license caps at 2,000 variables, so 28x28 (2,235) is reported `UNAVAILABLE`, not `FAIL` |
