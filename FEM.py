@@ -51,6 +51,13 @@ def get_idle_gpus(threshold_mb=500):
 
     return idle
 
+# Adapted from dwave-neal 0.5.x, neal/sampler.py::_default_ising_beta_range
+# (Copyright 2018 D-Wave Systems Inc., Apache License 2.0,
+# http://www.apache.org/licenses/LICENSE-2.0). Reproduced verbatim, docstring
+# and comments included, apart from two changes: the rename to beta_range, and
+# cold_beta = log(10000)/min_delta_energy in place of log(100), i.e. a 0.01%
+# rather than a 1% cold-end flip target -- the comment below still states the
+# upstream 1%. See NOTICE.
 def beta_range(h, J):
     """Determine the starting and ending beta from h J
 

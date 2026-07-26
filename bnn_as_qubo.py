@@ -33,10 +33,18 @@ def binarize(inp):
     return output
 
 
+# Adapted from qubovert 1.2.5, qubovert/_pcbo.py::PCBO.add_constraint_le_zero
+# (Copyright 2020 Joseph T. Iosue, Apache License 2.0,
+# http://www.apache.org/licenses/LICENSE-2.0). Changes: a free function that
+# builds and returns a fresh PCBO instead of a method mutating self; lam fixed
+# at 1, with the _append_constraint bookkeeping and the "if not lam" early
+# return dropped; and the slack-padded polynomial is handed back in equality
+# form (model += P) rather than squared into a penalty by
+# add_constraint_eq_zero/_pop_constraint. The ancilla loop, the min_val/max_val
+# branches and the warning messages are upstream's. See NOTICE.
 # FIXME: Implement the following for quso
 def le_zero_constraint_to_eq_zero_constraint(P, log_trick=True, bounds=None,
                                              suppress_warnings=False):
-    # Inspired by PCBO.add_constraint_le_zero implementation.
     model = qv.PCBO()
     P = qv.PUBO(P)
 
