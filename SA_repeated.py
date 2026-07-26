@@ -287,9 +287,17 @@ def dense_qubo_to_dict(matrix: np.ndarray, atol: float = 0.0) -> dict[tuple[int,
         raise ValueError("QUBO matrix contains NaN or infinite values.")
 
     rows, columns = np.nonzero(np.abs(matrix) > atol)
+    # np.nonzero returns one index array per dimension, so these are equal by
+    # construction. Checked explicitly because zip(..., strict=True) needs
+    # Python 3.10 and this package pins 3.9.
+    if len(rows) != len(columns):
+        raise ValueError(
+            f"QUBO nonzero index arrays disagree in length: {len(rows)} row "
+            f"indices versus {len(columns)} column indices."
+        )
     return {
         (int(row), int(column)): float(matrix[row, column])
-        for row, column in zip(rows, columns, strict=True)
+        for row, column in zip(rows, columns)
     }
 
 
@@ -558,8 +566,16 @@ def validate_sample(
     layers: Sequence[BinaryLinearLayer],
 ) -> tuple[bool, int, int]:
     candidate = decode_candidate_input(sample_bits, info, pixel_to_qubo_index)
+    # decode_candidate_input copies info.input_boolean and only reassigns
+    # elements, so these are equal by construction. Checked explicitly because
+    # zip(..., strict=True) needs Python 3.10 and this package pins 3.9.
+    if len(info.input_boolean) != len(candidate):
+        raise ValueError(
+            f"Decoded candidate length {len(candidate)} does not match the "
+            f"reference input length {len(info.input_boolean)}."
+        )
     hamming_distance = int(
-        sum(before != after for before, after in zip(info.input_boolean, candidate, strict=True))
+        sum(before != after for before, after in zip(info.input_boolean, candidate))
     )
     prediction, _ = forward_binary_network(candidate, layers)
 
