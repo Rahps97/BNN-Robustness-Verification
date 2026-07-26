@@ -51,7 +51,10 @@ The default run
 
 The default needs nothing beyond this repository and the packages in
 requirements.txt: no GPU, no solver license, no network, no special hardware.
-It covers every instance and takes well under a minute.
+It covers every instance and the width sweep's publication-grade series, and
+takes about ninety seconds -- about a third of that on the four instances and
+the rest on the width sweep, whose widest QUBO takes 36 s to rebuild. --quick
+covers the 5x5 alone, in about five seconds.
 
   Table II             The test accuracy and the test-set size of each trained
                        network are read out of the Info.txt that ships beside
@@ -83,14 +86,27 @@ It covers every instance and takes well under a minute.
                        other rows). Both are run on every instance, so each
                        number is confirmed twice by independent means.
 
+  Width sweep          The revision's hidden-layer width table. Each width's
+                       QUBO is rebuilt from its shipped checkpoint and the
+                       stored best annealing vectors are re-scored against it,
+                       the same way the FEM column is verified from its stored
+                       vectors, because re-running the annealer at W = 255 takes
+                       hours per seed. Z3 is re-run at every width. The
+                       31-input series the manuscript tabulates runs by default
+                       and adds about a minute; the 1023-input corroboration
+                       series is behind --with-width-1023.
+
 Opt-in checks
 -------------
 
-    --with-gurobi   Table IV Gurobi column. Needs a Gurobi license.
-    --with-sa       Table IV SA column. Minutes for 5x5, hours for 28x28.
-    --with-fem      Replays the FEM solver at its recorded hyperparameters
-                    instead of only verifying the recorded solution vectors.
-    --everything    All of the above.
+    --with-gurobi       Table IV Gurobi column. Needs a Gurobi license.
+    --with-sa           Table IV SA column. Minutes for 5x5, hours for 28x28.
+    --with-fem          Replays the FEM solver at its recorded hyperparameters
+                        instead of only verifying the recorded solution vectors.
+    --with-width-1023   The width sweep's 1023-input corroboration series.
+                        About 10 minutes and several GB of RAM, because the
+                        W = 255 QUBO there has 70,728 variables.
+    --everything        All of the above.
     --timeout S     Per-check wall-clock bound; exceeding it is TIMEOUT, not FAIL.
                     Opt-in checks default to 900 s each, because an unbounded
                     Gurobi run on these instances takes about a day.
@@ -227,6 +243,67 @@ DATA_ARCHIVE = os.path.join("data", "qubo_and_networks.tar.gz")
 DATASET_ARCHIVE = os.path.join("data", "datasets.tar.gz")
 HARDWARE_ARCHIVE = os.path.join("data", "hardware_results.tar.gz")
 GUROBI_LOG_ARCHIVE = os.path.join("data", "gurobi_logs.tar.gz")
+WIDTH_ARCHIVE = os.path.join("data", "width_scaling.tar.gz")
+
+# -----------------------------------------------------------------------------
+# The hidden-layer width sweep (the manuscript's width-scaling table, added in
+# the revision in answer to Reviewer 2's first question).
+#
+# Two series, both at six hidden widths. Only the 31-input one is
+# publication-grade and only it is tabulated in the manuscript: 1,000 training
+# epochs at every width and the full 2,048 simulated-annealing reads at every
+# width and seed, none of them truncated. The 1023-input series is corroboration
+# only -- 250 epochs, and the read budget truncated from W = 31 upwards, down to
+# 9 of 2,048 reads at W = 255 -- so its energies are upper bounds on what the
+# same SA configuration would reach, not measurements of it. It is checked
+# behind --with-width-1023 and never contributes a number to the manuscript.
+#
+# The check re-scores the STORED best vectors against QUBOs rebuilt here from
+# the shipped checkpoints. It never re-runs the annealer: one seed at W = 255 of
+# the 31-input series took 8.9 h, and its own 4-read calibration probe projected
+# 15.4 h, so a re-run is not something a verification pass can do.
+# -----------------------------------------------------------------------------
+
+WIDTH_DIR = "width_scaling"
+WIDTH_WIDTHS = (7, 15, 31, 63, 127, 255)
+WIDTH_SEEDS = (1, 2, 3, 4, 5)
+
+# The two series, keyed by the input size of the images they were trained on.
+WIDTH_SERIES = {
+    5: {"input_dim": 31, "epochs": 1000, "grade": "publication-grade",
+        "tabulated": True},
+    28: {"input_dim": 1023, "epochs": 250, "grade": "corroboration only",
+         "tabulated": False},
+}
+WIDTH_PUBLICATION_SERIES = 5
+
+# The manuscript's width-scaling table, row by row, for the 31-input series.
+# Z3 Runtime and SA Median Time are in the table too and are NOT here: both are
+# wall-clock figures and machine dependent, exactly as Table IV's SA time and
+# Table VII's Gurobi time are, so they are printed and never asserted.
+WIDTH_PAPER = {
+    #        QUBO       QUBO      best SA   seeds at   d_min
+    #    variables     terms      gap dE      target
+    7:   {"variables": 276,  "terms": 3349,    "gap": 0,   "at_target": 1,
+          "d_min": 3},
+    15:  {"variables": 533,  "terms": 8766,    "gap": 4,   "at_target": 0,
+          "d_min": 3},
+    31:  {"variables": 1038, "terms": 25235,   "gap": 17,  "at_target": 0,
+          "d_min": 3},
+    63:  {"variables": 2039, "terms": 80243,   "gap": 51,  "at_target": 0,
+          "d_min": 2},
+    127: {"variables": 4032, "terms": 277384,  "gap": 116, "at_target": 0,
+          "d_min": 2},
+    255: {"variables": 8009, "terms": 1017973, "gap": 259, "at_target": 0,
+          "d_min": 2},
+}
+
+# The minimum-distance scan is re-run only on the 31-input series, where it
+# costs 5.2 s over all six widths. On the 1023-input series the recorded scans
+# ran for 1 to 32 minutes each and two of the six returned UNKNOWN, so that
+# half is reported as UNAVAILABLE with the recorded status rather than re-run.
+WIDTH_SCAN_SERIES = (5,)
+WIDTH_Z3_TIMEOUT_SECONDS = 600.0
 
 # Table VII's two-class instance, as supplied by the authors.
 HARDWARE_DIR = "hardware"
@@ -418,12 +495,17 @@ GROUP_SA = "Table IV          SA column"
 GROUP_FEM_REPLAY = "Table IV          FEM solver replay"
 GROUP_HARDWARE = "Table VII         hardware results"
 GROUP_LINEAR = "Section IV-B      linear constraint form"
+# The revision's hidden-layer width table. Deliberately named by its subject
+# rather than by a roman numeral: inserting it renumbers the tables after it,
+# and this file's other group keys still use the pre-revision numbering.
+GROUP_WIDTH = "Width scaling     hidden-layer width sweep"
 
 # Groups that run without any opt-in flag. If one of these produces no PASS and
 # no FAIL at all, the run verified nothing it was supposed to verify and the
 # verdict is INCONCLUSIVE rather than PASS.
 DEFAULT_GROUPS = (GROUP_TABLE2, GROUP_STRUCTURE, GROUP_FEM, GROUP_Z3,
-                  GROUP_DMIN, GROUP_GUROBI_LOGS, GROUP_HARDWARE, GROUP_LINEAR)
+                  GROUP_DMIN, GROUP_GUROBI_LOGS, GROUP_HARDWARE, GROUP_LINEAR,
+                  GROUP_WIDTH)
 
 # Entries owed per instance when the group can actually be attempted.
 QUOTA_TABLE2 = 3
@@ -447,6 +529,13 @@ QUOTA_HARDWARE = 30
 # perturbation sizes, the Z3 witness and its proven minimum, and Gurobi's
 # minimum. Runtimes are reported next to these but never asserted.
 QUOTA_LINEAR = 7
+
+# Ten entries per hidden width, per series: three on the rebuilt QUBO, five on
+# the stored SA vectors re-scored against it, and two on Z3. The first nine are
+# WIDTH_CHECK_NAMES; the tenth is the minimum-distance scan, which is named
+# separately because it is re-run on one series and reported from the record on
+# the other.
+QUOTA_WIDTH = 10
 
 
 def expected_check_counts(sizes, missing, resources):
@@ -496,6 +585,18 @@ def expected_check_counts(sizes, missing, resources):
     # those leaves an UNAVAILABLE or SKIPPED entry of its own rather than
     # collapsing the group.
     expected[GROUP_LINEAR] = QUOTA_LINEAR if resources["hardware"] else 1
+
+    # The width sweep is a series of its own, not one of the four instances, so
+    # --quick leaves it out entirely -- zero entries, the same way --quick
+    # leaves out the 7x7, 11x11 and 28x28 rows rather than marking them
+    # UNAVAILABLE. Anything else that stops it running leaves entries behind.
+    if not resources["width_selected"]:
+        expected[GROUP_WIDTH] = 0
+    elif not resources["width_data"]:
+        expected[GROUP_WIDTH] = 1
+    else:
+        expected[GROUP_WIDTH] = (QUOTA_WIDTH * len(WIDTH_WIDTHS)
+                                 * len(resources["width_series"]))
 
     return expected
 
@@ -937,9 +1038,15 @@ class Deadline:
 # Instance description, read from the shipped Info.txt
 # -----------------------------------------------------------------------------
 
-def read_info(size):
-    """Parse the fields of Info.txt that describe the verification instance."""
-    with open(info_path(size), encoding="utf-8") as handle:
+def read_info_file(path):
+    """Parse the fields of an Info.txt that describe a verification instance.
+
+    QUBOCreator.py writes the `Minimum Energy` and `Total Variables` lines and
+    the width sweep's Info.txt does not, because there the QUBO is built after
+    the file rather than before it. Both are therefore optional here; the four
+    paper instances have them and read_info() below requires them.
+    """
+    with open(path, encoding="utf-8") as handle:
         text = handle.read()
 
     def bracketed(key):
@@ -953,13 +1060,15 @@ def read_info(size):
                 depth -= 1
                 if depth == 0:
                     return text[start + 1:position]
-        raise ValueError(f"{info_path(size)}: unterminated '{key}'")
+        raise ValueError(f"{path}: unterminated '{key}'")
+
+    def optional(pattern):
+        found = re.search(pattern, text)
+        return int(float(found.group(1))) if found else None
 
     return {
-        "minimum_energy": int(float(
-            re.search(r"Minimum Energy\s*:\s*(-?[\d.]+)", text).group(1))),
-        "total_variables": int(
-            re.search(r"Total Variables\s*:\s*(\d+)", text).group(1)),
+        "minimum_energy": optional(r"Minimum Energy\s*:\s*(-?[\d.]+)"),
+        "total_variables": optional(r"Total Variables\s*:\s*(\d+)"),
         "epsilon": int(re.search(r"Epsilon\s*:\s*(\d+)", text).group(1)),
         "pixels": [int(value) for value in
                    bracketed("Pixels perturbed").replace(",", " ").split()],
@@ -968,6 +1077,15 @@ def read_info(size):
         "label": int(float(
             re.search(r"Label to perturb\s*:\s*([\d.]+)", text).group(1))),
     }
+
+
+def read_info(size):
+    """Parse the Info.txt QUBOCreator.py wrote beside one shipped instance."""
+    info = read_info_file(info_path(size))
+    for field in ("minimum_energy", "total_variables"):
+        if info[field] is None:
+            raise ValueError(f"{info_path(size)}: no '{field}' line")
+    return info
 
 
 _QUBO_CACHE = {}
@@ -994,7 +1112,7 @@ def qubo_dict(size):
 # The authors' network, exactly as QUBOCreator.py defines it
 # -----------------------------------------------------------------------------
 
-def build_net(input_dim):
+def build_net(input_dim, width=7, checkpoint=None):
     """Rebuild QUBOCreator.py's QUBONet.
 
     QUBOCreator.py performs the whole generation pipeline at import time, so it
@@ -1002,6 +1120,11 @@ def build_net(input_dim):
     therefore repeated here; it must stay identical to the one in
     QUBOCreator.py, and the entry-by-entry comparison against the shipped
     QUBO_W.txt below would fail immediately if it ever drifted.
+
+    `width` and `checkpoint` default to the seven-unit hidden layer and the
+    tracked checkpoint of the paper's four instances, which is every caller
+    except the width sweep: that series holds the input fixed and varies the
+    width, so it passes both.
     """
     import torch
     import torch.nn as nn
@@ -1047,15 +1170,16 @@ def build_net(input_dim):
     class QUBONet(nn.Module):
         def __init__(self):
             super().__init__()
-            self.fc1 = BinaryLinear(input_dim, 7)
-            self.fc4 = LastLayer(7, 10)
+            self.fc1 = BinaryLinear(input_dim, width)
+            self.fc4 = LastLayer(width, 10)
 
         def forward(self, x):
             return torch.argmax(self.fc4(self.fc1(x)))
 
     net = QUBONet()
-    net.load_state_dict(torch.load(_checkpoint_for_dim(input_dim),
-                                   weights_only=True, map_location="cpu"))
+    net.load_state_dict(torch.load(
+        checkpoint if checkpoint is not None else _checkpoint_for_dim(input_dim),
+        weights_only=True, map_location="cpu"))
     net.eval()
     return net
 
@@ -2973,6 +3097,394 @@ but NumPy.
 
 
 # -----------------------------------------------------------------------------
+# Group 10 -- the hidden-layer width sweep
+# -----------------------------------------------------------------------------
+
+WIDTH_CHECK_NAMES = (
+    "QUBO variables from the checkpoint",
+    "QUBO quadratic terms from the checkpoint",
+    "target energy -E_off from the checkpoint",
+    "5 stored SA vectors re-scored on that QUBO",
+    "recorded gap_to_target for those 5 seeds",
+    "best SA gap dE over the 5 seeds",
+    "seeds that reached the target energy",
+    "SA read budget (2,048 reads) and truncation",
+    "Z3 status at the recorded epsilon",
+)
+assert len(WIDTH_CHECK_NAMES) == QUOTA_WIDTH - 1  # the last name covers two
+
+
+def width_dir(size, width=None):
+    root = f"{WIDTH_DIR}/{size}x{size}"
+    return root if width is None else f"{root}/w{width}"
+
+
+def width_available():
+    return os.path.exists(f"{width_dir(WIDTH_PUBLICATION_SERIES, 7)}/qubo.json")
+
+
+def _width_records(size, width):
+    """Every JSON record shipped for one cell of the sweep."""
+    folder = width_dir(size, width)
+    with open(f"{folder}/qubo.json", encoding="utf-8") as handle:
+        qubo = json.load(handle)
+    with open(f"{folder}/z3.json", encoding="utf-8") as handle:
+        z3_record = json.load(handle)
+    with open(f"{folder}/qubo_vars.json", encoding="utf-8") as handle:
+        names = json.load(handle)["ordered_variables"]
+    sa = {}
+    for seed in WIDTH_SEEDS:
+        with open(f"{folder}/sa_seed{seed}.json", encoding="utf-8") as handle:
+            sa[seed] = json.load(handle)
+    return qubo, z3_record, names, sa
+
+
+def _width_rebuild(size, width, info):
+    """Rebuild one cell's QUBO with the repository's own builder.
+
+    Same call the four paper instances go through in rebuild_qubo(), with the
+    hidden width and the checkpoint taken from the sweep rather than from
+    PAPER. The perturbable pixels, the clean input, the label and epsilon all
+    come out of the Info.txt shipped beside the checkpoint, so nothing here
+    needs Dataset/ and nothing needs the QUBO the run itself wrote.
+    """
+    import torch
+    from get_args import args
+    from utils import to_spin
+    from bnn_as_qubo import setup_optim_model
+
+    args.pixels_to_perturb_len = len(info["pixels"])
+    args.LAMBDA = {
+        "sum_taus": 0.1,
+        "output": 1,
+        "hard_constraints": 1,
+        "perturbation_bound_constraint": 1,
+        "epsilon": 1,
+    }
+    args.objective = "zero"
+    args.epsilon = info["epsilon"]
+    args.include_perturbation_bound_constraint = True
+    args.selected_targets = tuple(range(10))
+    args.argmax_tie_aware = False
+    args.pixels_to_perturb = list(info["pixels"])
+
+    net = build_net(WIDTH_SERIES[size]["input_dim"], width=width,
+                    checkpoint=f"{width_dir(size, width)}/model.pth")
+    spin = to_spin(torch.tensor(info["clean"], dtype=torch.float32))
+    hamiltonian, ordered = setup_optim_model(spin, info["label"], net, args)
+    model = hamiltonian.to_qubo()
+    return model.Q, float(model[()]), [str(name) for name in ordered]
+
+
+def _width_energy(qubo, bits):
+    """x^T Q x for a qubovert QUBO dictionary and a 0/1 vector."""
+    total = 0.0
+    for key, value in qubo.items():
+        if len(key) == 1:
+            if bits[key[0]]:
+                total += value
+        elif len(key) == 2:
+            if bits[key[0]] and bits[key[1]]:
+                total += value
+        else:
+            raise RuntimeError(f"unexpected QUBO key degree: {key}")
+    return total
+
+
+def check_width_scaling(report, selected, series_sizes, deadline):
+    report.section(
+        "Hidden-layer width sweep -- QUBO size, stored SA vectors, Z3",
+        GROUP_WIDTH)
+    report.note("""
+The width sweep holds the input and the perturbation budget fixed and widens
+the single hidden layer from 7 to 255 units. The 31-input series is the one the
+manuscript tabulates: 1,000 training epochs at every width, and five annealing
+seeds per width at the full 2,048 reads with none of them truncated. The
+1023-input series is corroboration only -- 250 epochs, and the read budget
+truncated from W = 31 upwards, to as few as 9 of 2,048 reads at W = 255 -- so
+its energies are bounds rather than measurements and no manuscript number rests
+on them. It is checked behind --with-width-1023.
+
+Nothing here re-runs the annealer. One seed at W = 255 of the 31-input series
+took 8.9 h and its own calibration probe projected 15.4 h, so re-running the
+sweep is not something a verification pass can do. Instead each width's QUBO is
+rebuilt from its shipped checkpoint with bnn_as_qubo.setup_optim_model -- the
+same builder the four paper instances go through -- and the STORED best vector
+of each seed is re-scored against it, exactly as the Table IV FEM column is
+verified from its stored vectors. A recorded energy that the rebuilt QUBO does
+not reproduce is a FAIL.
+
+Z3 is genuinely re-run at each width. Wall-clock figures -- the table's Z3
+Runtime and SA Median Time columns -- are printed and never asserted, as
+everywhere else in this report.
+""")
+
+    if not selected:
+        print()
+        report.note("--quick verifies the 5x5 instance only; the width sweep "
+                    "is a separate series\nand is not part of it. Run without "
+                    "--quick to include it.")
+        return
+
+    if not width_available():
+        print()
+        report.outcome(UNAVAILABLE, "hidden-layer width sweep",
+                       f"{WIDTH_DIR}/ is not present in the repository",
+                       f"tar xzf {WIDTH_ARCHIVE}")
+        return
+
+    import numpy as np
+
+    Z3, z3_error = optional_import("Z3")
+
+    for size in series_sizes:
+        series = WIDTH_SERIES[size]
+        report.section(
+            f"Hidden-layer width sweep -- {series['input_dim']}-input series "
+            f"({series['grade']})", GROUP_WIDTH)
+        print(f"\n {size}x{size} images, {series['input_dim']} inputs, "
+              f"{series['epochs']:,} training epochs per width, "
+              f"{'tabulated in the manuscript' if series['tabulated'] else 'not tabulated'}")
+
+        for width in WIDTH_WIDTHS:
+            paper = WIDTH_PAPER.get(width) if series["tabulated"] else None
+            print(f"\n W = {width}")
+            try:
+                qubo_record, z3_record, names, sa = _width_records(size, width)
+                info = read_info_file(f"{width_dir(size, width)}/Info.txt")
+            except Exception as exc:
+                report_all(report, UNAVAILABLE, WIDTH_CHECK_NAMES,
+                           f"the records for {width_dir(size, width)} could "
+                           f"not be read ({exc!r})",
+                           f"tar xzf {WIDTH_ARCHIVE}", size=size)
+                report.outcome(UNAVAILABLE, "minimum-distance scan status",
+                               "the records above could not be read",
+                               size=size)
+                continue
+
+            started = time.perf_counter()
+            try:
+                qubo, offset, ordered = _width_rebuild(size, width, info)
+            except Exception as exc:  # pragma: no cover - defensive
+                report.error(WIDTH_CHECK_NAMES[0],
+                             f"the QUBO rebuild failed: {exc!r}", size=size)
+                report_all(report, UNAVAILABLE, WIDTH_CHECK_NAMES[1:],
+                           "the QUBO could not be rebuilt, so nothing can be "
+                           "scored against it", size=size)
+                report.outcome(UNAVAILABLE, "minimum-distance scan status",
+                               "the QUBO could not be rebuilt", size=size)
+                continue
+            rebuild_seconds = time.perf_counter() - started
+
+            quadratic = sum(1 for key in qubo if len(key) == 2)
+            target = -offset
+
+            # 1-3: the rebuilt instance against the record, and against the
+            # manuscript's table where the manuscript has a row for it.
+            report.check(WIDTH_CHECK_NAMES[0],
+                         paper["variables"] if paper
+                         else qubo_record["qubo_variables"],
+                         len(ordered),
+                         detail=f"(record {qubo_record['qubo_variables']:,}, "
+                                f"rebuilt in {rebuild_seconds:.1f} s)",
+                         size=size)
+            report.check(WIDTH_CHECK_NAMES[1],
+                         paper["terms"] if paper
+                         else qubo_record["qubo_quadratic_terms"],
+                         quadratic,
+                         detail=f"(record "
+                                f"{qubo_record['qubo_quadratic_terms']:,}, "
+                                f"{qubo_record['qubo_linear_terms']} linear)",
+                         size=size)
+            report.check(WIDTH_CHECK_NAMES[2],
+                         -float(qubo_record["energy_offset"]), target,
+                         ok=target == -float(qubo_record["energy_offset"]),
+                         detail="(record qubo.json energy_offset)", size=size)
+
+            # 4-5: re-score every stored best vector on the rebuilt QUBO. The
+            # vectors are indexed by the run's own variable order, so they are
+            # mapped through the shipped name list rather than by position;
+            # a reordering would otherwise pass silently.
+            position = {name: index for index, name in enumerate(ordered)}
+            rescored, energy_ok, gap_ok, failures = {}, True, True, []
+            for seed in WIDTH_SEEDS:
+                record = sa[seed]
+                try:
+                    stored = np.load(
+                        f"{width_dir(size, width)}/sa_seed{seed}_best.npy")
+                    bits = np.zeros(len(ordered), dtype=np.int8)
+                    for index, name in enumerate(names):
+                        bits[position[name]] = stored[index]
+                    energy = _width_energy(qubo, bits)
+                except Exception as exc:
+                    failures.append(f"seed {seed}: {exc!r}")
+                    energy_ok = gap_ok = False
+                    continue
+                rescored[seed] = energy
+                if energy != float(record["best_energy"]):
+                    energy_ok = False
+                    failures.append(f"seed {seed}: re-scored {energy:,.0f}, "
+                                    f"record {record['best_energy']:,.0f}")
+                if energy - target != float(record["gap_to_target"]):
+                    gap_ok = False
+
+            if rescored:
+                spread = (f"{min(rescored.values()):,.0f} to "
+                          f"{max(rescored.values()):,.0f}")
+            else:
+                spread = "nothing re-scored"
+            report.assertion(
+                WIDTH_CHECK_NAMES[3], energy_ok,
+                f"{len(rescored)}/{len(WIDTH_SEEDS)} re-scored, {spread}"
+                + (f"; {'; '.join(failures)}" if failures else ""),
+                size=size)
+            report.assertion(
+                WIDTH_CHECK_NAMES[4], gap_ok,
+                f"target {target:,.0f}; recorded gaps "
+                f"{[int(sa[s]['gap_to_target']) for s in WIDTH_SEEDS]}",
+                size=size)
+
+            # 6-7: the two SA columns the manuscript's table reports.
+            gaps = [energy - target for energy in rescored.values()]
+            best_gap = min(gaps) if gaps else None
+            at_target = sum(1 for gap in gaps if gap == 0)
+            times = sorted(float(sa[s]["wall_seconds"]) for s in WIDTH_SEEDS)
+            report.check(WIDTH_CHECK_NAMES[5],
+                         paper["gap"] if paper
+                         else min(float(sa[s]["gap_to_target"])
+                                  for s in WIDTH_SEEDS),
+                         best_gap,
+                         ok=(best_gap is not None
+                             and best_gap == (paper["gap"] if paper else
+                                              min(float(sa[s]["gap_to_target"])
+                                                  for s in WIDTH_SEEDS))),
+                         detail=f"(median SA wall time "
+                                f"{times[len(times) // 2]:,.0f} s, reported "
+                                f"not asserted)",
+                         size=size)
+            report.check(WIDTH_CHECK_NAMES[6],
+                         paper["at_target"] if paper
+                         else sum(1 for s in WIDTH_SEEDS
+                                  if sa[s]["reached_target"]),
+                         at_target,
+                         detail=f"(of {len(WIDTH_SEEDS)} seeds)", size=size)
+
+            # 8: the read budget, which is what separates the two series.
+            reads = [int(sa[s]["executed_reads"]) for s in WIDTH_SEEDS]
+            truncated = [bool(sa[s]["truncated_to_fit_budget"])
+                         for s in WIDTH_SEEDS]
+            requested = {int(sa[s]["requested_reads"]) for s in WIDTH_SEEDS}
+            if series["tabulated"]:
+                budget_ok = (requested == {2048} and set(reads) == {2048}
+                             and not any(truncated))
+                budget_text = (f"all five seeds ran {min(reads):,} of "
+                               f"{max(requested):,} reads, none truncated")
+            else:
+                # Corroboration series: the record is allowed to be truncated,
+                # but the truncation flag has to agree with the read count.
+                budget_ok = all(
+                    (executed < 2048) == flag
+                    for executed, flag in zip(reads, truncated))
+                budget_text = (f"reads {min(reads):,} to {max(reads):,} of "
+                               f"2,048; truncated={any(truncated)}"
+                               + ("  -- BOUND, not a measurement"
+                                  if any(truncated) else ""))
+            report.assertion(WIDTH_CHECK_NAMES[7], budget_ok, budget_text,
+                             size=size)
+
+            # 9: Z3, re-run at the recorded epsilon, plus the scan.
+            recorded_status = z3_record["at_epsilon"]["status"]
+            if Z3 is None:
+                report.outcome(UNAVAILABLE, WIDTH_CHECK_NAMES[8],
+                               f"Z3.py could not be imported ({z3_error!r})",
+                               Z3_MISSING_HINT, size=size,
+                               claimed=recorded_status)
+                report.outcome(UNAVAILABLE, "minimum-distance scan status",
+                               f"Z3.py could not be imported ({z3_error!r})",
+                               Z3_MISSING_HINT, size=size,
+                               claimed=z3_record["scan"]["scan_status"])
+                continue
+
+            budget = deadline.reset().solver_budget(WIDTH_Z3_TIMEOUT_SECONDS)
+            if budget is None:
+                report.outcome(TIMEOUT, WIDTH_CHECK_NAMES[8],
+                               "the --timeout budget was already spent",
+                               "raise --timeout, or --timeout 0 for no limit",
+                               size=size, claimed=recorded_status)
+                report.outcome(TIMEOUT, "minimum-distance scan status",
+                               "the --timeout budget was already spent",
+                               "raise --timeout, or --timeout 0 for no limit",
+                               size=size,
+                               claimed=z3_record["scan"]["scan_status"])
+                continue
+
+            try:
+                with captured(report.verbose):
+                    result = Z3.verify_instance(
+                        f"{width_dir(size, width)}/Info.txt",
+                        f"{width_dir(size, width)}/model.pth",
+                        timeout_seconds=budget)
+                status = result.status
+                solve_seconds = result.runtime_seconds
+            except Exception as exc:  # pragma: no cover - defensive
+                report.error(WIDTH_CHECK_NAMES[8], f"Z3 failed: {exc!r}",
+                             size=size)
+                report.outcome(UNAVAILABLE, "minimum-distance scan status",
+                               "the Z3 query above failed", size=size)
+                continue
+
+            report.check(WIDTH_CHECK_NAMES[8], recorded_status, status,
+                         detail=f"(epsilon {info['epsilon']}, solve "
+                                f"{solve_seconds:.3f} s, record "
+                                f"{z3_record['at_epsilon']['runtime_seconds']:.3f} s)",
+                         size=size)
+
+            recorded_scan = z3_record["scan"]["scan_status"]
+            recorded_dmin = z3_record["scan"]["minimum_adversarial_distance"]
+            if size not in WIDTH_SCAN_SERIES:
+                report.outcome(
+                    UNAVAILABLE, "minimum-distance scan status",
+                    f"the recorded scan for this series ran for "
+                    f"{z3_record['scan']['total_runtime_seconds']:.0f} s at "
+                    f"this width and two of its six widths returned UNKNOWN, "
+                    f"so it is not re-run here; the record says "
+                    f"{recorded_scan}",
+                    size=size, claimed=recorded_scan)
+                continue
+
+            budget = deadline.reset().solver_budget(WIDTH_Z3_TIMEOUT_SECONDS)
+            if budget is None:
+                report.outcome(TIMEOUT, "minimum-distance scan status",
+                               "the --timeout budget was already spent",
+                               "raise --timeout, or --timeout 0 for no limit",
+                               size=size, claimed=recorded_scan)
+                continue
+            try:
+                with captured(report.verbose):
+                    summary, _ = Z3.scan_minimum_adversarial_distance(
+                        f"{width_dir(size, width)}/Info.txt",
+                        f"{width_dir(size, width)}/model.pth",
+                        start_epsilon=0, max_epsilon=None,
+                        timeout_seconds=budget)
+            except Exception as exc:  # pragma: no cover - defensive
+                report.error("minimum-distance scan status",
+                             f"the scan failed: {exc!r}", size=size)
+                continue
+
+            scanned = (summary.scan_status,
+                       summary.minimum_adversarial_distance)
+            report.check("minimum-distance scan status",
+                         f"{recorded_scan}, d_min {recorded_dmin}",
+                         f"{scanned[0]}, d_min {scanned[1]}",
+                         ok=(scanned[0] == recorded_scan
+                             and scanned[1] == recorded_dmin
+                             and (paper is None
+                                  or scanned[1] == paper["d_min"])),
+                         detail=f"({summary.total_runtime_seconds:.2f} s)",
+                         size=size)
+
+
+# -----------------------------------------------------------------------------
 # Data availability
 # -----------------------------------------------------------------------------
 
@@ -3076,8 +3588,14 @@ def parse_arguments(argv):
                         help="SA seeds per instance (default 3)")
     parser.add_argument("--with-fem", action="store_true",
                         help="also replay the FEM solver (stochastic)")
+    parser.add_argument("--with-width-1023", action="store_true",
+                        help="also check the width sweep's 1023-input "
+                             "corroboration series (about 10 minutes and "
+                             "several GB of RAM; the 31-input series that the "
+                             "manuscript tabulates is checked by default)")
     parser.add_argument("--everything", action="store_true",
-                        help="shorthand for --with-gurobi --with-sa --with-fem")
+                        help="shorthand for --with-gurobi --with-sa --with-fem "
+                             "--with-width-1023")
     parser.add_argument("--timeout", type=float, metavar="SECONDS",
                         help="per-check wall-clock bound; exceeding it is "
                              "TIMEOUT, not FAIL. 0 means no limit at all, "
@@ -3122,6 +3640,13 @@ def main(argv=None):
     with_gurobi = options.with_gurobi or options.everything
     with_sa = options.with_sa or options.everything
     with_fem = options.with_fem or options.everything
+    with_width_1023 = options.with_width_1023 or options.everything
+
+    # The width sweep is its own series, not one of the four instances, so
+    # --quick leaves it out the way it leaves out the other three instances.
+    width_selected = not options.quick
+    width_series = [WIDTH_PUBLICATION_SERIES] + (
+        [28] if with_width_1023 else [])
 
     # --timeout 0 reads as "no limit", and that is what it does: `unlimited` is
     # carried as None everywhere below. Previously 0 produced a negative budget
@@ -3146,7 +3671,9 @@ def main(argv=None):
            "number")
     extra = [name for name, on in (("--with-gurobi", with_gurobi),
                                    ("--with-sa", with_sa),
-                                   ("--with-fem", with_fem)) if on]
+                                   ("--with-fem", with_fem),
+                                   ("--with-width-1023", with_width_1023))
+             if on]
     extra_text = (", ".join(extra) if extra else
                   "none (no license, no GPU, no network, no hardware needed)")
     print(f" opt-in checks   : {extra_text}")
@@ -3189,6 +3716,9 @@ def main(argv=None):
     hardware_available = ensure_archive(
         HARDWARE_ARCHIVE, HARDWARE_QUBO,
         "the Table VII two-class hardware instance", not options.no_extract)
+    width_data_available = width_selected and ensure_archive(
+        WIDTH_ARCHIVE, f"{width_dir(WIDTH_PUBLICATION_SERIES, 7)}/qubo.json",
+        "the hidden-layer width sweep", not options.no_extract)
 
     # What this run can attempt, fixed BEFORE any check runs, so that the
     # expected-count self-check below is an independent statement rather than a
@@ -3201,6 +3731,9 @@ def main(argv=None):
             size=size)) for size in sizes},
         "hardware": hardware_available,
         "with_sa": with_sa,
+        "width_selected": width_selected,
+        "width_data": width_data_available,
+        "width_series": width_series,
     }
     expected = expected_check_counts(sizes, missing, resources)
 
@@ -3218,6 +3751,7 @@ def main(argv=None):
     check_hardware(report, hardware_available, deadline)
     check_linear_baseline(report, hardware_available, with_gurobi,
                           opt_in_deadline)
+    check_width_scaling(report, width_selected, width_series, deadline)
 
     result, status_code = report.summary(time.time() - started, expected)
 
@@ -3227,7 +3761,9 @@ def main(argv=None):
             "instances": sizes,
             "extracted_archive": extracted,
             "missing_instances": missing,
-            "opt_in": {"gurobi": with_gurobi, "sa": with_sa, "fem": with_fem},
+            "opt_in": {"gurobi": with_gurobi, "sa": with_sa, "fem": with_fem,
+                       "width_1023": with_width_1023},
+            "width_series": width_series if width_selected else [],
             "counts": counts,
             "expected_check_counts": expected,
             "recorded_check_counts": report.group_counts(),
