@@ -94,7 +94,8 @@ covers the 5x5 alone, in about five seconds.
                        hours per seed. Z3 is re-run at every width. The
                        31-input series the manuscript tabulates runs by default
                        and adds about a minute; the 1023-input corroboration
-                       series is behind --with-width-1023.
+                       series is behind --with-width-1023 and takes about half
+                       an hour.
 
 Opt-in checks
 -------------
@@ -104,8 +105,11 @@ Opt-in checks
     --with-fem          Replays the FEM solver at its recorded hyperparameters
                         instead of only verifying the recorded solution vectors.
     --with-width-1023   The width sweep's 1023-input corroboration series.
-                        About 10 minutes and several GB of RAM, because the
-                        W = 255 QUBO there has 70,728 variables.
+                        About half an hour and up to 4.6 GB of RAM: the W = 255
+                        QUBO there has 70,728 variables and 10,110,083 terms,
+                        takes six minutes to rebuild, and its Z3 query can
+                        outlast even the 1,800 s bound the sweep itself used --
+                        which is reported as TIMEOUT, never as FAIL.
     --everything        All of the above.
     --timeout S     Per-check wall-clock bound; exceeding it is TIMEOUT, not FAIL.
                     Opt-in checks default to 900 s each, because an unbounded
@@ -303,7 +307,13 @@ WIDTH_PAPER = {
 # ran for 1 to 32 minutes each and two of the six returned UNKNOWN, so that
 # half is reported as UNAVAILABLE with the recorded status rather than re-run.
 WIDTH_SCAN_SERIES = (5,)
-WIDTH_Z3_TIMEOUT_SECONDS = 600.0
+
+# The bound the sweep itself gave Z3, recorded as timeout_seconds in every
+# z3.json, so the re-run is made under the same one. The 31-input series never
+# comes close: 2.9 s at its widest. The 1023-input series took 173 s of solve
+# time at W = 255 on the machine the records came from, and a slower machine can
+# exceed even this bound there -- which is reported as TIMEOUT, never as FAIL.
+WIDTH_Z3_TIMEOUT_SECONDS = 1800.0
 
 # Table VII's two-class instance, as supplied by the authors.
 HARDWARE_DIR = "hardware"
@@ -3433,11 +3443,25 @@ everywhere else in this report.
                                "the Z3 query above failed", size=size)
                 continue
 
-            report.check(WIDTH_CHECK_NAMES[8], recorded_status, status,
-                         detail=f"(epsilon {info['epsilon']}, solve "
-                                f"{solve_seconds:.3f} s, record "
-                                f"{z3_record['at_epsilon']['runtime_seconds']:.3f} s)",
-                         size=size)
+            if status == "UNKNOWN":
+                # Exceeding a bound is TIMEOUT, never FAIL. The 1023-input
+                # series reaches this at its widest width on a slower machine
+                # than the one the records came from, where the same query took
+                # 173 s of solve time.
+                report.outcome(TIMEOUT, WIDTH_CHECK_NAMES[8],
+                               f"Z3 returned UNKNOWN after "
+                               f"{solve_seconds:.0f} s against a bound of "
+                               f"{budget:.0f} s; the record says "
+                               f"{recorded_status} after "
+                               f"{z3_record['at_epsilon']['runtime_seconds']:.0f} s",
+                               "raise --timeout, or --timeout 0 for no limit",
+                               size=size, claimed=recorded_status)
+            else:
+                report.check(WIDTH_CHECK_NAMES[8], recorded_status, status,
+                             detail=f"(epsilon {info['epsilon']}, solve "
+                                    f"{solve_seconds:.3f} s, record "
+                                    f"{z3_record['at_epsilon']['runtime_seconds']:.3f} s)",
+                             size=size)
 
             recorded_scan = z3_record["scan"]["scan_status"]
             recorded_dmin = z3_record["scan"]["minimum_adversarial_distance"]
@@ -3590,8 +3614,8 @@ def parse_arguments(argv):
                         help="also replay the FEM solver (stochastic)")
     parser.add_argument("--with-width-1023", action="store_true",
                         help="also check the width sweep's 1023-input "
-                             "corroboration series (about 10 minutes and "
-                             "several GB of RAM; the 31-input series that the "
+                             "corroboration series (about half an hour and up "
+                             "to 4.6 GB of RAM; the 31-input series that the "
                              "manuscript tabulates is checked by default)")
     parser.add_argument("--everything", action="store_true",
                         help="shorthand for --with-gurobi --with-sa --with-fem "
