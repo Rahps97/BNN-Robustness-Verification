@@ -286,6 +286,42 @@ python TrainingNN.py
 
 This script trains the binary neural network using the generated binarized dataset.
 
+#### Where binarization happens, and the sign convention
+
+Two details of the forward pass are worth stating explicitly, because the QUBO
+encoding has to match them exactly and neither is visible from the network
+summary. Both `TrainingNN.py` and `QUBOCreator.py` define them identically.
+
+**`sgn(0) = +1`.** `Binarize.forward` maps `inp >= 0` to `+1` and `inp < 0` to
+`-1`. It is written out rather than delegated to `Tensor.sign()` because
+`sign()` returns `0` at `0`, which would leave a neuron in neither state. The
+encoded constraints use the same convention.
+
+For the four networks reported here the tie is unreachable at the activations,
+and the reason matters before assuming a reimplementation is equivalent.
+`TrainingNN.py` and `QUBOCreator.py` both map each input through `to_spin`
+before the forward pass, so `fc1` sees values in `{-1, +1}` rather than the
+`{0, 1}` stored in the dataset files, and the binarized weights are in
+`{-1, +1}` too. Every fan-in in these architectures is odd, 31, 63, 127 and
+1023 into the hidden layer and 7 into the output layer, so each pre-activation
+is a sum of an odd number of terms of `±1` and is therefore odd and never `0`. Flipping input
+bits under perturbation does not change that. Checked directly on the 5x5
+training set: `0` of `9,660` hidden and `0` of `13,800` output pre-activations
+are zero.
+
+Two consequences. The convention is not load-bearing for the reported results,
+so a reimplementation that breaks the tie the other way still reproduces them.
+It does become load-bearing for any even fan-in, and it already applies to the
+weights themselves, where a stored weight of exactly `0.0` binarizes to `+1`.
+
+**`BinaryLinear` binarizes twice, `LastLayer` once.** `BinaryLinear.forward`
+binarizes the weight matrix and then binarizes the layer output as well, so the
+hidden activations are in `{-1, +1}`. `LastLayer.forward` binarizes only the
+weight matrix and returns real-valued logits, which training feeds to a softmax
+and `QUBOCreator.py` feeds to `argmax`. Reimplementing the forward pass with a
+single binarization step, or with the output layer binarized too, produces a
+different network from the one the reported QUBOs encode.
+
 ### 3. Generate the robustness-verification QUBO
 
 ```bash
