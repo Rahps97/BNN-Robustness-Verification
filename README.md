@@ -134,16 +134,30 @@ This script solves the generated QUBO using the Free-Energy Machine solver.
 
 ##### The reported FEM results, and how to check them
 
-The FEM energies reported in the paper were produced by the code at the annotated
-tag `paper-results-v1`. To obtain exactly that version:
+The FEM energies reported in the paper were produced by `FEM.py` **before** the two
+solver changes described in *Solver changes made after `paper-results-v1`* below,
+namely the per-worker `copy.deepcopy` of `params_dic` and the relative parameter
+floors. Those are forward-looking robustness fixes; they correct nothing in the
+paper and change no reported number.
+
+That code state is marked by the annotated tag `paper-results-v1`:
 
 ```bash
 git checkout paper-results-v1
 ```
 
-Commits after that tag change how `FEM.py` searches (see *Solver changes made after
-`paper-results-v1`* below). They are forward-looking robustness fixes; they correct
-nothing in the paper and change no reported number.
+Note that git tags are not carried across a pull-request merge, and squash- or
+rebase-merging rewrites commit hashes. If the tag is absent, the pre-change
+behaviour can still be recovered from the current tree without it:
+
+- set `FEM_PARAM_FLOOR_RATIO=0`, which disables the parameter floors entirely, and
+- replace the `copy.deepcopy(params_dic)` in the worker dispatch with
+  `params_dic.copy()`.
+
+Neither the reported energies nor the recorded configurations depend on this: the
+solution vectors in `FEM_best_configurations.txt` can be checked against the shipped
+QUBO matrices at any commit, and doing so is the recommended way to verify the FEM
+column (see below).
 
 FEM's coordinate search is **stochastic**. It draws Sobol-scrambled seeds, sweeps
 one hyperparameter at a time, and carries the winning value into the next round, so
