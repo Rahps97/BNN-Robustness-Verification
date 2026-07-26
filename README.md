@@ -164,7 +164,7 @@ A check is never silently omitted. Every row carries one of:
 | `--with-fem` | replays FEM at its recorded hyperparameters | seconds to minutes; stochastic, so a shortfall is `INCONCLUSIVE` |
 | `--everything` | all three of the above | — |
 | `--timeout S` | per-check wall-clock bound | exceeding it is `TIMEOUT`, never `FAIL`. `--timeout 0` means **no limit at all**, including for the opt-in checks, which otherwise get 900 s each. A negative value is rejected |
-| `--json PATH` | machine-readable report as well | `-` writes to stdout, after the human-readable report rather than instead of it, so pipe to a file and parse that rather than straight into `jq` |
+| `--json PATH` | machine-readable report as well | `-` writes to stdout, after the human-readable report rather than instead of it, so pipe to a file and parse that rather than straight into `jq`. `result` carries the verdict word and `exit_code` the status from the table above; `expected_check_counts` and `recorded_check_counts` carry the per-group self-check |
 | `--verbose` | full output of every sub-check | — |
 | `--no-extract` | never unpack `data/` automatically | — |
 
