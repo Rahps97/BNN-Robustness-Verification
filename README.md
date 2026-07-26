@@ -6,6 +6,123 @@ The framework is designed to support both **conventional optimization algorithms
 
 The goal of this codebase is to demonstrate that BNN robustness-verification problems can be expressed as QUBO instances and solved using both classical and emerging Ising or annealing platforms, thereby providing a bridge between AI trustworthiness and unconventional computing.
 
+## Verifying the reported results
+
+One command re-checks the paper's numbers and prints a pass/fail report:
+
+```bash
+git clone <this repository> && cd <this repository>
+python -m pip install -r requirements.txt
+python verify_paper.py
+```
+
+That is the whole procedure. It covers **all four instances** (5x5, 7x7, 11x11, 28x28), takes **about half a minute** on a laptop, and needs **no GPU, no solver license, no network access and no annealing hardware**. It exits non-zero if any reported number fails to reproduce.
+
+The 7x7, 11x11 and 28x28 data ships compressed in `data/`; `verify_paper.py` unpacks `data/qubo_and_networks.tar.gz` for you on the first run and says so. The 5x5 instance is checked into the repository directly, so `python verify_paper.py --quick` works on a bare clone with no unpacking at all.
+
+### What it checks
+
+| Paper table | Checked how |
+| --- | --- |
+| Tables III, IV, VI | Each QUBO is rebuilt from scratch with the authors' own `bnn_as_qubo.setup_optim_model`, and the variable count, the **true** constraint count and the energy offset `E_off` are compared with the tables. The rebuilt matrix is then compared entry by entry with the shipped `QUBO_W.txt`. |
+| Table IV, FEM column | The FEM solution vectors in `FEM_best_configurations.txt` are evaluated against the shipped QUBO matrices as `x^T Q x`, and each is decoded into a perturbation and replayed through an independent NumPy forward pass of the BNN. |
+| Table V | The Z3 SMT baseline is re-run at each instance's recorded epsilon, and every witness is reverse-checked with that same independent forward pass. |
+| Table V, `d_min` | Recomputed twice per instance: by exhaustive enumeration and by a Z3 minimum-distance scan. |
+
+Note that `E_off` is an **energy**, not a constraint count. Earlier versions of Tables III, IV and VI reported it in the *Total Constraints* column; `verify_paper.py` recomputes and reports the two separately so the correction can be checked directly.
+
+### Sample output
+
+```text
+===============================================================================
+ verify_paper.py -- reproducing the reported numerical results
+===============================================================================
+ instances       : 5x5, 7x7, 11x11, 28x28
+ QUBO encoding   : strict argmax (args.argmax_tie_aware = False), the encoding
+                   used for every shipped QUBO and every reported number
+ opt-in checks   : none (no license, no GPU, no network, no hardware needed)
+
+-------------------------------------------------------------------------------
+ Tables III, IV, VI -- QUBO structure (variables / constraints / energy offset)
+-------------------------------------------------------------------------------
+ 5x5 (31x7x10)   rebuilt in 2.4 s
+   [     PASS     ] Total Variables                       paper       276   recomputed       276
+   [     PASS     ] Total Constraints (true count)        paper       200   recomputed       200   (eq 198 + gt 1 + lt 1)
+   [     PASS     ] Energy offset E_off (an energy, ...)  paper       533   recomputed       533
+   [     PASS     ] rebuilt QUBO == shipped QUBO_W.txt    276x276, max |difference| = 0
+   ...
+
+-------------------------------------------------------------------------------
+ Table V -- exact SMT baseline (Z3) at the epsilon from Info.txt
+-------------------------------------------------------------------------------
+ 28x28 (1023x7x10)
+   [     PASS     ] Z3 verdict at epsilon 128             paper        NR   recomputed        NR   (SAT, solve 1.330 s)
+   [     PASS     ] witness reverse-checked ...           110 pixels flipped <= budget 128, prediction 2 -> 6
+
+===============================================================================
+ SUMMARY
+===============================================================================
+ Tables III/IV/VI  QUBO structure                   36 passed
+ Table IV          FEM energies + reverse check     12 passed
+ Table V           Z3 SMT baseline                  8 passed
+ Table V           minimum adversarial distance     8 passed
+ Table IV          Gurobi column                    4 not run
+ Table IV          SA column                        4 not run
+ Table IV          FEM solver replay                4 not run
+ Table VII         hardware results                 3 not verifiable
+
+ 64 passed, 0 failed, 12 not run (--with-fem, --with-gurobi, --with-sa), 3 not verifiable (hardware access required)
+
+ RESULT: PASS -- every check that was run reproduces the paper.
+===============================================================================
+```
+
+### Outcomes
+
+A check is never silently omitted. Every row carries one of:
+
+| Outcome | Meaning |
+| --- | --- |
+| `PASS` | recomputed, and it matches the paper |
+| `FAIL` | recomputed, and it does **not** match the paper (the only outcome that makes the exit status non-zero) |
+| `SKIPPED` | not requested; the row states the flag that would run it |
+| `UNAVAILABLE` | cannot be run here: no license, no data, no hardware |
+| `TIMEOUT` | started but exceeded `--timeout` |
+| `INCONCLUSIVE` | ran, but the solver is stochastic and fell short; neither confirms nor refutes the reported number |
+| `NOT VERIFIABLE` | no offline substitute exists at all (Table VII) |
+
+### Options
+
+| Flag | Effect | Cost and requirements |
+| --- | --- | --- |
+| *(none)* | all four instances, everything that needs nothing external | ~30 s, CPU only |
+| `--quick` | 5x5 only | ~2 s; works on a bare clone with no unpacking |
+| `--instance 5,7` | a chosen subset | — |
+| `--with-gurobi` | Table IV Gurobi column | needs a Gurobi license; hours. The common size-limited license caps at 2,000 variables, so 28x28 (2,235) is reported `UNAVAILABLE`, not `FAIL` |
+| `--with-sa` | Table IV SA column, at `SA.py`'s settings | minutes for 5x5, hours for 28x28; `--sa-seeds N` sets the seed count (default 3) |
+| `--with-fem` | replays FEM at its recorded hyperparameters | seconds to minutes; stochastic, so a shortfall is `INCONCLUSIVE` |
+| `--everything` | all three of the above | — |
+| `--timeout S` | per-check wall-clock bound | exceeding it is `TIMEOUT`, never `FAIL` |
+| `--json PATH` | machine-readable report as well | `-` writes to stdout |
+| `--verbose` | full output of every sub-check | — |
+| `--no-extract` | never unpack `data/` automatically | — |
+
+For the heuristic and early-terminated solvers, two different gaps are reported, because they answer different questions: the gap against **the paper's value** is the reproduction question, and the gap against **the target energy** is the feasibility question. They are not the same — Table IV's SA column is 8,019 for 11x11 against a target of 8,020. Since the objective `H_0` is identically zero, a gap of `g` above the target upper-bounds the number of violated encoded constraints.
+
+### The shipped data
+
+| Archive | Size | Contents | Needed for |
+| --- | --- | --- | --- |
+| `data/qubo_and_networks.tar.gz` | 0.52 MB | `QUBO/` and `TrainedNN/`, all four instances | everything `verify_paper.py` does |
+| `data/datasets.tar.gz` | 4.8 MB | `Dataset/`, all four instances | only regenerating QUBOs from scratch with `QUBOCreator.py` |
+
+```bash
+tar xzf data/qubo_and_networks.tar.gz   # what verify_paper.py unpacks for you
+tar xzf data/datasets.tar.gz            # only needed to rerun QUBOCreator.py
+```
+
+Both extract into the repository root at the paths every script already expects (`QUBO/7x7/...`, not `data/QUBO/7x7/...`). They expand to about 138 MB and 313 MB of dense text, which is why they are shipped compressed and why the expanded paths are git-ignored. The 5x5 files are tracked in the repository and are byte-identical to their copies in the archives, so extracting over them changes nothing and leaves `git status` clean.
+
 ## Installation Details
 
 The following Python packages are required to reproduce the experiments:
