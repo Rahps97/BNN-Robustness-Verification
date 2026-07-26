@@ -712,3 +712,13 @@ Witness: flip pixels [0, 20, 4] -> class 6
 The first block re-derives everything with its own code and confirms the witness is a genuine adversarial example. The second goes further: for this instance the network is robust up to a perturbation budget of 2 and not robust from 3 onwards, since flipping the three pixels 0, 20 and 4 changes the prediction from class 0 to class 6. Exhaustive enumeration proves 3 is the true minimum.
 
 Timings, energies and the particular witness reported by the heuristic solvers vary between runs and machines; the robust/non-robust boundary reported by `Z3.py` does not.
+
+## Citing this work
+
+If you use this code, please cite the paper and the archived software release.
+
+**Paper.** *Robustness Verification of Binary Neural Networks: An Ising and Quantum-Inspired Framework*, Rahul Singh, Seyran Saeedi and Zheng Zhang. Preprint: [arXiv:2602.13536](https://arxiv.org/abs/2602.13536).
+
+**Software.** `CITATION.cff` in the repository root carries the machine-readable citation metadata; GitHub renders it as the *Cite this repository* panel in the sidebar, with ready-made APA and BibTeX exports.
+
+The archival DOI has not been minted yet. [`docs/ZENODO.md`](docs/ZENODO.md) is the checklist for doing it: which commit to archive, how to cut the release that mints the DOI, and where the resulting identifier has to be recorded. `.zenodo.json` holds the metadata Zenodo will read when the release is archived.

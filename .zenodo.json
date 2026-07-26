@@ -1,0 +1,57 @@
+{
+  "upload_type": "software",
+  "title": "BNN-Robustness-Verification: code and data for \"Robustness Verification of Binary Neural Networks: An Ising and Quantum-Inspired Framework\"",
+  "description": "<p>Code and data accompanying the paper <em>Robustness Verification of Binary Neural Networks: An Ising and Quantum-Inspired Framework</em> by Rahul Singh, Seyran Saeedi and Zheng Zhang (preprint: <a href=\"https://arxiv.org/abs/2602.13536\">arXiv:2602.13536</a>).</p><p>The repository implements an end-to-end pipeline that maps the robustness verification of a binary neural network (BNN) to a Quadratic Constrained Boolean Optimization (QCBO) problem and then to a Quadratic Unconstrained Binary Optimization (QUBO) instance, so that the verification query can be attacked with conventional solvers as well as with Ising-style, annealing and quantum-inspired hardware.</p><p>Contents:</p><ul><li>QUBO construction for MNIST BNNs at four input sizes (5x5, 7x7, 11x11, 28x28): <code>bnn_as_qubo.py</code>, <code>QUBOCreator.py</code>.</li><li>Binarized dataset preparation and BNN training: <code>DatasetCreation.py</code>, <code>prepare_dataset.py</code>, <code>TrainingNN.py</code>.</li><li>Solvers and baselines: simulated annealing (<code>SA.py</code>, <code>SA_repeated.py</code>), the Free Energy Machine (<code>FEM.py</code>), Gurobi (<code>Gurobi.py</code>, <code>run_gurobi_all.py</code>) and an exact Z3/SMT baseline (<code>Z3.py</code>).</li><li>Independent replay of any claimed counterexample through a NumPy forward pass of the BNN: <code>verify_counterexamples.py</code>.</li><li><code>verify_paper.py</code>, a single command that re-checks the numbers reported in Tables III to VII and exits non-zero if any of them fails to reproduce. It needs no GPU, no solver licence, no network access and no annealing hardware, and takes about half a minute on a laptop.</li><li><code>data/</code>: the four QUBO instances and their trained checkpoints, the recorded Gurobi solver logs, and the Fujitsu Digital Annealer and D-Wave samples behind Table VII, so that the hardware rows can be re-evaluated without access to the hardware.</li></ul><p>The MNIST dataset itself is not redistributed here; it is publicly available and is fetched by the dataset-preparation scripts.</p><p>Funding: U.S. National Science Foundation grant 2311295 and U.S. Department of Energy grant DE-SC0021323.</p>",
+  "creators": [
+    {
+      "name": "Singh, Rahul",
+      "affiliation": "University of California, Santa Barbara"
+    },
+    {
+      "name": "Saeedi, Seyran",
+      "affiliation": "Independent researcher; work performed at University of California, Santa Barbara"
+    },
+    {
+      "name": "Zhang, Zheng",
+      "affiliation": "University of California, Santa Barbara",
+      "orcid": "0000-0002-2292-0030"
+    }
+  ],
+  "access_right": "open",
+  "license": "MIT",
+  "language": "eng",
+  "keywords": [
+    "binary neural networks",
+    "robustness verification",
+    "adversarial robustness",
+    "formal verification",
+    "QUBO",
+    "Ising model",
+    "quantum-inspired computing",
+    "quantum annealing",
+    "digital annealer",
+    "simulated annealing",
+    "Free Energy Machine",
+    "SMT solving",
+    "trustworthy AI",
+    "MNIST"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "10.48550/arXiv.2602.13536",
+      "relation": "isSupplementTo",
+      "resource_type": "publication-preprint"
+    },
+    {
+      "identifier": "https://github.com/Rahps97/BNN-Robustness-Verification",
+      "relation": "isSupplementTo",
+      "resource_type": "software"
+    }
+  ],
+  "grants": [
+    {
+      "id": "10.13039/100000001::2311295"
+    }
+  ],
+  "notes": "<p>Provenance: the exact code state that produced the published numbers is recorded in the repository as the annotated git tag <code>paper-results-v1</code> (commit 47b877e). Commits made after that tag fix a Python 3.9 crash that aborted every satisfiable Table V query, remove two unsound misclassification encodings, and add <code>verify_paper.py</code>; per the repository's own documentation they change no reported number. This archive is of the later, corrected state, which reproduces the reported numbers on a stock CPU-only Python environment.</p><p>The U.S. Department of Energy award DE-SC0021323 is not present in Zenodo's award vocabulary and therefore cannot be expressed in the machine-readable funding field; it is recorded here and in the description instead.</p>"
+}
