@@ -515,6 +515,25 @@ selects it from `NoImprovementNodes[InputSize]` and `run_gurobi_all.py` from
 `verify_paper.py` re-derives each span from the shipped log and checks it against
 `run_gurobi_all.py`'s table, so the two cannot drift apart unnoticed.
 
+**One line of each log was redacted.** Every log opened with
+
+```
+Set parameter LicenseID to value <the ID>
+```
+
+which is an identifier tied to a named academic Gurobi account. It is not a
+credential and it serves no reproducibility purpose, but it would have become
+permanent once a DOI is minted, so in all four logs that line now reads
+`Set parameter LicenseID to value <redacted>`. Nothing else was touched: the
+redaction changed one line and three bytes per file, and every other byte — the
+model statistics, the node counts, the incumbent and bound lines, the timings and
+the MIP gaps — is unchanged, as are the archive's member order and per-member tar
+metadata. The academic-licence banner on the next line was left alone; it names no
+account. `verify_paper.py` was re-run against a fresh extraction of the repacked
+archive and reports the same result as before the redaction, including all 24
+log-derived Gurobi checks. So if you are reading a log and wondering whether it was
+edited: yes, on exactly one line, and only to remove the licence ID.
+
 To force one value across every instance instead — for a quick smoke test, say —
 set `NO_IMPR_NODES`:
 
