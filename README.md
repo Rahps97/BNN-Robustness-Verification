@@ -18,7 +18,9 @@ python verify_paper.py
 
 That is the whole procedure. It covers **all four instances** (5x5, 7x7, 11x11, 28x28), takes **about half a minute** on a laptop, and needs **no GPU, no solver license, no network access and no annealing hardware**. It exits non-zero if any reported number fails to reproduce.
 
-The 7x7, 11x11 and 28x28 data ships compressed in `data/`; `verify_paper.py` unpacks `data/qubo_and_networks.tar.gz` for you on the first run and says so. The 5x5 instance is checked into the repository directly, so `python verify_paper.py --quick` works on a bare clone with no unpacking at all.
+**Every number reported in the paper is checkable from this repository**, with two exceptions noted below. Tables III to VII are all covered, including the D-Wave and Fujitsu hardware rows of Table VII: the two-class instance, both hardware samples and the recorded Gurobi solver logs ship alongside the QUBOs, so a reviewer can re-evaluate them without any hardware or license. The only rows that cannot be recomputed are the Gurobi and SA entries of Table VII, for which no solution vector was archived; they are reported as `UNAVAILABLE` with that reason, never as passing.
+
+Everything needed ships compressed in `data/` (5.8 MB in total), and `verify_paper.py` unpacks what it needs on the first run and says so. The 5x5 instance is checked into the repository directly, so `python verify_paper.py --quick` works on a bare clone with no unpacking at all.
 
 ### What it checks
 
@@ -28,8 +30,10 @@ The 7x7, 11x11 and 28x28 data ships compressed in `data/`; `verify_paper.py` unp
 | Table IV, FEM column | The FEM solution vectors in `FEM_best_configurations.txt` are evaluated against the shipped QUBO matrices as `x^T Q x`, and each is decoded into a perturbation and replayed through an independent NumPy forward pass of the BNN. |
 | Table V | The Z3 SMT baseline is re-run at each instance's recorded epsilon, and every witness is reverse-checked with that same independent forward pass. |
 | Table V, `d_min` | Recomputed twice per instance: by exhaustive enumeration and by a Z3 minimum-distance scan. |
+| Table IV, Gurobi column | The incumbent is read out of each recorded solver log and compared with the table, along with the fact that every run was stopped by hand rather than by a time limit and that none proved optimality. |
+| Table VII | The two-class QUBO is rebuilt from the authors' pickled constraint dictionaries with the recipe in their own `Verify.ipynb`, and both hardware samples are re-evaluated against it: the Fujitsu solution attains the target energy exactly and satisfies all 65 encoded constraints in 0.366 s, and the best of D-Wave's 4,000 shots reaches −874,318, 356 above the target, satisfying 36 of 65. |
 
-Note that `E_off` is an **energy**, not a constraint count. Earlier versions of Tables III, IV and VI reported it in the *Total Constraints* column; `verify_paper.py` recomputes and reports the two separately so the correction can be checked directly.
+Note that `E_off` is an **energy**, not a constraint count. Earlier versions of Tables III, IV and VI reported it in the *Total Constraints* column; `verify_paper.py` recomputes and reports the two separately so the correction can be checked directly. The same distinction applies to Table VII, whose *Constraints Satisfied* column prints 1,273 (the instance's f-term count) and 356 (an energy gap) rather than constraint counts; the instance has 65 encoded constraints in total, and the script prints the corrected figures next to the reported ones.
 
 ### Sample output
 
@@ -45,23 +49,34 @@ Note that `E_off` is an **energy**, not a constraint count. Earlier versions of 
  [setup] 7x7, 11x11, 28x28 not extracted; unpacking data/qubo_and_networks.tar.gz
  [setup] into the repository root (QUBO/ and TrainedNN/; ~138 MB expanded, git-ignored)
  [setup] done.
+ [setup] the recorded Gurobi solver logs not extracted; unpacking data/gurobi_logs.tar.gz
+ [setup] the Table VII two-class hardware instance not extracted; unpacking data/hardware_results.tar.gz
 
 -------------------------------------------------------------------------------
  Tables III, IV, VI -- QUBO structure (variables / constraints / energy offset)
 -------------------------------------------------------------------------------
- 5x5 (31x7x10)   rebuilt in 2.4 s
-   [     PASS     ] Total Variables                       paper       276   recomputed       276
-   [     PASS     ] Total Constraints (true count)        paper       200   recomputed       200   (eq 198 + gt 1 + lt 1)
-   [     PASS     ] Energy offset E_off (an energy, ...)  paper       533   recomputed       533
-   [     PASS     ] rebuilt QUBO == shipped QUBO_W.txt    276x276, max |difference| = 0
+ 5x5 (31x7x10)   rebuilt in 1.4 s
+   [     PASS     ] Total Variables                            paper     276   recomputed     276
+   [     PASS     ] Total Constraints (true count)             paper     200   recomputed     200   (eq 198 + gt 1 + lt 1)
+   [     PASS     ] Energy offset E_off (an energy, not a count) paper   533   recomputed     533
+   [     PASS     ] rebuilt QUBO == shipped QUBO_W.txt         276x276, max |difference| = 0
    ...
 
 -------------------------------------------------------------------------------
  Table V -- exact SMT baseline (Z3) at the epsilon from Info.txt
 -------------------------------------------------------------------------------
  28x28 (1023x7x10)
-   [     PASS     ] Z3 verdict at epsilon 128             paper        NR   recomputed        NR   (SAT, solve 1.330 s)
-   [     PASS     ] witness reverse-checked ...           110 pixels flipped <= budget 128, prediction 2 -> 6
+   [     PASS     ] Z3 verdict at epsilon 128                  paper      NR   recomputed      NR   (SAT, solve 1.433 s)
+   [     PASS     ] witness reverse-checked ...                110 pixels flipped <= budget 128, prediction 2 -> 6
+
+-------------------------------------------------------------------------------
+ Table VII -- quantum and digital annealing hardware
+-------------------------------------------------------------------------------
+ Digital Annealer (Fujitsu)
+   [     PASS     ] Best energy                       paper -874,674   recomputed -874,674
+   [     PASS     ] every encoded constraint satisfied  is_solution_valid True, penalty value 0
+   [     PASS     ] Constraints satisfied (corrected)  paper      65   recomputed      65   of 65
+   [     PASS     ] Total time (s)                     paper   0.366   recomputed   0.366
 
 ===============================================================================
  SUMMARY
@@ -70,21 +85,22 @@ Note that `E_off` is an **energy**, not a constraint count. Earlier versions of 
  Table IV          FEM energies + reverse check     12 passed
  Table V           Z3 SMT baseline                  8 passed
  Table V           minimum adversarial distance     8 passed
+ Table IV          Gurobi column (logs)             20 passed
  Table IV          Gurobi column                    4 not run
  Table IV          SA column                        4 not run
  Table IV          FEM solver replay                4 not run
- Table VII         hardware results                 3 not verifiable
+ Table VII         hardware results                 14 passed, 2 unavailable
 
- 61 passed, 0 failed, 15 not run (--with-fem, --with-gurobi, --with-sa), 3 not verifiable (hardware access required)
- elapsed: 22.7 s
+ 95 passed, 0 failed, 15 not run (--with-fem, --with-gurobi, --with-sa), 2 unavailable
+ elapsed: 23.6 s
 
  RESULT: PASS -- every check that was run reproduces the paper.
-         18 check(s) were NOT run and are therefore NOT verified; see the
+         17 check(s) were NOT run and are therefore NOT verified; see the
          reasons above. Do not read them as confirmed.
 ===============================================================================
 ```
 
-(The three structural rows shown as *not run* are the optional cross-check that the training set re-selects the same instance; it needs `data/datasets.tar.gz` unpacked as well. With both archives extracted the run is 64 passed, 0 failed.)
+The two `unavailable` rows are Table VII's Gurobi and SA entries, for which no solution vector was archived. The three structural rows shown as *not run* are the optional cross-check that the training set re-selects the same instance; that one needs `data/datasets.tar.gz` unpacked as well, and with it the run is 98 passed, 0 failed.
 
 ### Outcomes
 
@@ -107,7 +123,7 @@ A check is never silently omitted. Every row carries one of:
 | *(none)* | all four instances, everything that needs nothing external | ~30 s, CPU only |
 | `--quick` | 5x5 only | ~2 s; works on a bare clone with no unpacking |
 | `--instance 5,7` | a chosen subset | — |
-| `--with-gurobi` | Table IV Gurobi column | needs a Gurobi license; hours. The common size-limited license caps at 2,000 variables, so 28x28 (2,235) is reported `UNAVAILABLE`, not `FAIL` |
+| `--with-gurobi` | re-solve the Table IV Gurobi column from scratch, instead of reading the recorded logs | needs a Gurobi license; hours. The common size-limited license caps at 2,000 variables, so 28x28 (2,235) is reported `UNAVAILABLE`, not `FAIL` |
 | `--with-sa` | Table IV SA column, at `SA.py`'s settings | minutes for 5x5, hours for 28x28; `--sa-seeds N` sets the seed count (default 3) |
 | `--with-fem` | replays FEM at its recorded hyperparameters | seconds to minutes; stochastic, so a shortfall is `INCONCLUSIVE` |
 | `--everything` | all three of the above | — |
@@ -120,17 +136,23 @@ For the heuristic and early-terminated solvers, two different gaps are reported,
 
 ### The shipped data
 
-| Archive | Size | Contents | Needed for |
+| Archive | Size | Extracts to | Needed for |
 | --- | --- | --- | --- |
-| `data/qubo_and_networks.tar.gz` | 0.52 MB | `QUBO/` and `TrainedNN/`, all four instances | everything `verify_paper.py` does |
-| `data/datasets.tar.gz` | 4.8 MB | `Dataset/`, all four instances | only regenerating QUBOs from scratch with `QUBOCreator.py` |
+| `data/qubo_and_networks.tar.gz` | 0.52 MB | `QUBO/`, `TrainedNN/` | Tables III to VI: the four QUBO instances and their checkpoints |
+| `data/gurobi_logs.tar.gz` | 0.09 MB | `gurobi_logs/` | Table IV's Gurobi column, from the recorded solver logs |
+| `data/hardware_results.tar.gz` | 0.10 MB | `hardware/` | Table VII: the two-class QUBO, the Fujitsu and D-Wave samples, and the authors' `Verify.ipynb` |
+| `data/datasets.tar.gz` | 4.8 MB | `Dataset/` | only regenerating QUBOs from scratch with `QUBOCreator.py` |
+
+`verify_paper.py` unpacks the first three itself. To do it by hand:
 
 ```bash
-tar xzf data/qubo_and_networks.tar.gz   # what verify_paper.py unpacks for you
+tar xzf data/qubo_and_networks.tar.gz
+tar xzf data/gurobi_logs.tar.gz
+tar xzf data/hardware_results.tar.gz
 tar xzf data/datasets.tar.gz            # only needed to rerun QUBOCreator.py
 ```
 
-Both extract into the repository root at the paths every script already expects (`QUBO/7x7/...`, not `data/QUBO/7x7/...`). They expand to about 138 MB and 313 MB of dense text, which is why they are shipped compressed and why the expanded paths are git-ignored. The 5x5 files are tracked in the repository and are byte-identical to their copies in the archives, so extracting over them changes nothing and leaves `git status` clean.
+They extract into the repository root at the paths every script already expects (`QUBO/7x7/...`, not `data/QUBO/7x7/...`). `QUBO/` and `Dataset/` expand to about 138 MB and 313 MB of dense text, which is why they ship compressed and why the expanded paths are git-ignored. The 5x5 files are tracked in the repository and are byte-identical to their copies in the archives, so extracting over them changes nothing and leaves `git status` clean.
 
 ## Installation Details
 

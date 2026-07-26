@@ -26,3 +26,7 @@ QUBO/*
 !QUBO/5x5/
 TrainedNN/*
 !TrainedNN/5x5/
+
+# Unpacked from data/hardware_results.tar.gz and data/gurobi_logs.tar.gz.
+/hardware/
+/gurobi_logs/

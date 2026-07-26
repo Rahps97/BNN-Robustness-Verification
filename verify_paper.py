@@ -142,6 +142,34 @@ FEM_SOLUTIONS_PATH = "FEM_best_configurations.txt"
 FEM_HYPERPARAMETERS_PATH = "FEM_HYPERPARAMETERS.md"
 DATA_ARCHIVE = os.path.join("data", "qubo_and_networks.tar.gz")
 DATASET_ARCHIVE = os.path.join("data", "datasets.tar.gz")
+HARDWARE_ARCHIVE = os.path.join("data", "hardware_results.tar.gz")
+GUROBI_LOG_ARCHIVE = os.path.join("data", "gurobi_logs.tar.gz")
+
+# Table VII's two-class instance, as supplied by the authors.
+HARDWARE_DIR = "hardware"
+HARDWARE_STEM = "113-1273-28-15-zero-3-3-561020-H"
+HARDWARE_QUBO = f"{HARDWARE_DIR}/QUBO/{HARDWARE_STEM}.pickle"
+HARDWARE_FUJITSU = f"{HARDWARE_DIR}/Result/{HARDWARE_STEM}_solution.pickle"
+HARDWARE_FUJITSU_TIME = f"{HARDWARE_DIR}/Time/{HARDWARE_STEM}_time.pickle"
+HARDWARE_DWAVE = f"{HARDWARE_DIR}/Dwave/{HARDWARE_STEM}_solution_dataframe.pickle"
+
+# Recomputed properties of that instance, and the reported hardware results.
+HARDWARE = {
+    "variables": 113,
+    "constraints": 65,          # 1 lt + 64 eq
+    "qubo_terms": 1272,
+    "offset": 874674,           # so the target energy is -874,674
+    "fujitsu_energy": -874674,  # Table VII, Digital Annealer
+    "fujitsu_time": 0.366,
+    "fujitsu_constraints": 65,
+    "dwave_energy": -874318,    # Table VII, Quantum Annealer
+    "dwave_time": 0.724,
+    "dwave_constraints": 36,
+    "dwave_shots": 4000,
+}
+
+GUROBI_LOG_DIR = "gurobi_logs"
+GUROBI_LOG_PATTERN = GUROBI_LOG_DIR + "/GurobiLog_{size}x{size}.txt"
 
 # Exhaustive enumeration refuses to start a distance level larger than this.
 MAX_COMBINATIONS_PER_LEVEL = 5_000_000
@@ -1113,7 +1141,108 @@ Both are cheap on all four instances here, so each number is confirmed twice.
 
 
 # -----------------------------------------------------------------------------
-# Group 5 -- opt-in: Gurobi
+# Group 5 -- Table IV, Gurobi column, from the recorded solver logs
+# -----------------------------------------------------------------------------
+
+GUROBI_BEST_RE = re.compile(
+    r"^Best objective\s+(-?[\d.eE+]+),\s*best bound\s+(-?[\d.eE+]+),\s*"
+    r"gap\s+([\d.eE+-]+)%", re.MULTILINE)
+GUROBI_COLUMNS_RE = re.compile(r"Optimize a model with .*?(\d+) columns")
+GUROBI_EXPLORED_RE = re.compile(
+    r"^Explored (\d[\d,]*) nodes .*? in ([\d.]+) seconds", re.MULTILINE)
+
+
+def parse_gurobi_log(path):
+    """Read the incumbent, bound, MIP gap and node count out of a Gurobi log."""
+    text = open(path, encoding="utf-8", errors="replace").read()
+    best = GUROBI_BEST_RE.search(text)
+    if best is None:
+        return None
+    columns = GUROBI_COLUMNS_RE.search(text)
+    explored = GUROBI_EXPLORED_RE.search(text)
+    return {
+        "best_objective": float(best.group(1)),
+        "best_bound": float(best.group(2)),
+        "gap_percent": float(best.group(3)),
+        "variables": int(columns.group(1)) if columns else None,
+        "nodes": int(explored.group(1).replace(",", "")) if explored else None,
+        "seconds": float(explored.group(2)) if explored else None,
+        "interrupted": "Solve interrupted" in text,
+        "time_limit_set": "Set parameter TimeLimit" in text,
+        "proved_optimal": "Optimal solution found" in text,
+    }
+
+
+def check_gurobi_logs(report, sizes, missing, available):
+    report.section(
+        "Table IV -- Gurobi column, from the recorded solver logs",
+        "Table IV          Gurobi column (logs)")
+    report.note("""
+The Gurobi runs behind Table IV took hours to a day each on a 32-core machine,
+so they are not rerun by default. Their solver logs are shipped instead, and
+the reported incumbent is read straight out of each one and compared with the
+table. Use --with-gurobi to re-solve from scratch instead.
+
+The logs also record how those runs ended, which the paper describes and this
+reproduces: every one says "Solve interrupted" with no TimeLimit parameter set,
+i.e. a manual stop, and none proves optimality. The remaining MIP gaps are
+printed below as context; they are not pass/fail criteria.
+""")
+
+    if not available:
+        print()
+        for size in sizes:
+            report.outcome(UNAVAILABLE,
+                           f"{size}x{size} Gurobi best objective (Table IV)",
+                           f"{GUROBI_LOG_DIR}/ is not present",
+                           f"tar xzf {GUROBI_LOG_ARCHIVE}", size=size,
+                           claimed=-PAPER[size]["gurobi_score"])
+        return
+
+    for size in sizes:
+        claim = PAPER[size]
+        report.instance_header(size)
+        path = GUROBI_LOG_PATTERN.format(size=size)
+        if not os.path.exists(path):
+            report.outcome(UNAVAILABLE, "Gurobi best objective (Table IV)",
+                           f"no solver log at {path}",
+                           f"tar xzf {GUROBI_LOG_ARCHIVE}", size=size,
+                           claimed=-claim["gurobi_score"])
+            continue
+
+        parsed = parse_gurobi_log(path)
+        if parsed is None:
+            report.error("Gurobi best objective (Table IV)",
+                         f"{path}: no 'Best objective' line", size=size)
+            continue
+
+        report.check("Gurobi best objective (Table IV)",
+                     -float(claim["gurobi_score"]), parsed["best_objective"],
+                     detail=f"({os.path.basename(path)})", size=size)
+        report.check("Energy score E_off - dE (Table IV, Gurobi)",
+                     claim["gurobi_score"],
+                     claim["offset"] - (parsed["best_objective"]
+                                        + claim["offset"]),
+                     detail=f"(dE = "
+                            f"{parsed['best_objective'] + claim['offset']:g})",
+                     size=size)
+        if parsed["variables"] is not None:
+            report.check("model size in the log", claim["variables"],
+                         parsed["variables"], detail="columns", size=size)
+        report.assertion(
+            "stopped by hand, not by a time limit",
+            parsed["interrupted"] and not parsed["time_limit_set"],
+            f"'Solve interrupted', no TimeLimit set", size=size)
+        report.assertion(
+            "reported as an incumbent, not proven optimal",
+            not parsed["proved_optimal"],
+            f"MIP gap {parsed['gap_percent']:.4g}% remaining, "
+            f"{parsed['nodes']:,} nodes in {parsed['seconds']:,.0f} s",
+            size=size)
+
+
+# -----------------------------------------------------------------------------
+# Group 6 -- opt-in: re-solve with Gurobi
 # -----------------------------------------------------------------------------
 
 def check_gurobi(report, sizes, missing, enabled, deadline):
@@ -1486,41 +1615,203 @@ paper's value and the gap vs the target energy are reported separately.
 
 
 # -----------------------------------------------------------------------------
-# Group 8 -- Table VII: never verifiable offline
+# Group 9 -- Table VII: the two-class hardware instance
 # -----------------------------------------------------------------------------
 
-def report_hardware(report):
+def build_hardware_model(pickled):
+    """Rebuild the two-class PCBO from the pickled constraint dictionaries.
+
+    This follows the authors' own Verify.ipynb exactly: the 'lt' entries go
+    through add_constraint_lt_zero and the 'eq' entries through
+    add_constraint_eq_zero. The objective H_0 is identically zero here too, so
+    the QUBO is just the penalty sum and the pickled 'qubo' dictionary must come
+    back out of it unchanged.
+    """
+    import qubovert as qv
+    from qubovert import boolean_var
+
+    def term(entry):
+        built = qv.PUBO()
+        for variables, coefficient in entry.items():
+            if len(variables) == 0:
+                built += coefficient
+            elif len(variables) == 1:
+                built += boolean_var(variables[0]) * coefficient
+            else:
+                built += (boolean_var(variables[0])
+                          * boolean_var(variables[1]) * coefficient)
+        return built
+
+    model = qv.PCBO()
+    for entry in pickled["constraints"]["lt"]:
+        model.add_constraint_lt_zero(term(entry))
+    for entry in pickled["constraints"]["eq"]:
+        model.add_constraint_eq_zero(term(entry))
+    return model
+
+
+def count_satisfied(model, solution):
+    """Count satisfied constraints using qubovert's own validity predicates."""
+    predicates = {
+        "eq": lambda value: value == 0,
+        "ne": lambda value: value != 0,
+        "lt": lambda value: value < 0,
+        "le": lambda value: value <= 0,
+        "gt": lambda value: value > 0,
+        "ge": lambda value: value >= 0,
+    }
+    satisfied = total = 0
+    for kind, constraints in model.constraints.items():
+        for constraint in constraints:
+            total += 1
+            satisfied += bool(predicates[kind](constraint.value(solution)))
+    return satisfied, total
+
+
+def check_hardware(report, available):
     report.section("Table VII -- quantum and digital annealing hardware",
                    "Table VII         hardware results")
     report.note("""
 Table VII was produced on a D-Wave quantum annealer and on Fujitsu's Digital
-Annealer, on a representative two-class instance that is not part of this
-repository. There is no flag to run these: they need hardware access AND data
-that is not shipped here. They are reported as NOT VERIFIABLE so that they can
-never be mistaken for checked results.
+Annealer, on a separate two-class instance. That instance, both hardware
+solutions and the authors' own Verify.ipynb now ship in
+data/hardware_results.tar.gz, so the rows can be checked here. The hardware
+itself is not re-run -- these are the recorded samples, re-evaluated against the
+QUBO and against every encoded constraint.
+
+READ THIS BEFORE THE ROWS BELOW. Table VII's "Constraints Satisfied" column
+currently prints 1,273 for Gurobi / DA / SA and 356 for the QA. Neither figure
+is a constraint count. This instance has 65 encoded constraints in total:
+
+  * 1,273 is the f-term count carried in the instance's file name; the QUBO
+    itself has 1,272 quadratic and linear terms.
+  * 356 is the QA's energy gap above the target, not a number of constraints.
+    It happens to upper-bound the violations, as energy gaps do here, but it
+    is 5.5x the total number of constraints that exist.
+
+This is the same confusion between an energy and a constraint count that was
+corrected in Tables III, IV and VI, and Table VII needs the same correction.
+The rows below check the CORRECTED column -- 65 out of 65 for the Digital
+Annealer and 36 out of 65 for the quantum annealer -- together with the
+energies and runtimes, which are what the hardware actually reported.
 """)
     print()
 
-    report.outcome(
-        NOT_VERIFIABLE, "Table VII, D-Wave quantum annealer "
-        "(356 constraints satisfied, 0.724 s over 5,000 shots)",
-        "requires D-Wave Leap credentials, a minor embedding onto the Pegasus "
-        "topology, and the two-class instance, which is not in this repository")
-    report.outcome(
-        NOT_VERIFIABLE, "Table VII, Fujitsu digital annealer "
-        "(1,273 constraints satisfied, 0.366 s)",
-        "requires access to Fujitsu's Digital Annealer service and the "
-        "two-class instance, which is not in this repository")
-    report.outcome(
-        NOT_VERIFIABLE, "Table VII, Gurobi and SA rows "
-        "(1,273 constraints satisfied)",
-        "same two-class instance; it is not in this repository, so the row "
-        "cannot be recomputed even though the solvers are available")
+    if not available:
+        report.outcome(UNAVAILABLE, "Table VII, two-class instance",
+                       f"{HARDWARE_DIR}/ is not present",
+                       f"tar xzf {HARDWARE_ARCHIVE}")
+        return
+
+    import pickle
+
+    with open(HARDWARE_QUBO, "rb") as handle:
+        pickled = pickle.load(handle)
+    model = build_hardware_model(pickled)
+    qubo = model.to_qubo()
+
+    print(" the two-class instance")
+    report.assertion(
+        "rebuilt QUBO == the shipped qubo dictionary",
+        qubo.Q == pickled["qubo"],
+        f"{len(pickled['qubo']):,} terms, rebuilt with the authors' "
+        f"Verify.ipynb recipe")
+    report.check("Variables", HARDWARE["variables"], len(model.variables))
+    counts = {kind: len(value) for kind, value in model.constraints.items()}
+    report.check("Encoded constraints (the true total)",
+                 HARDWARE["constraints"], sum(counts.values()),
+                 detail="(" + " + ".join(f"{k} {v}" for k, v
+                                         in sorted(counts.items())) + ")")
+    report.check("QUBO terms", HARDWARE["qubo_terms"], len(qubo.Q))
+    report.check("Energy offset E_off", HARDWARE["offset"], qubo[()],
+                 detail="so the target energy is "
+                        f"{-HARDWARE['offset']:,}")
+
+    # -- Fujitsu Digital Annealer ---------------------------------------------
+    print("\n Digital Annealer (Fujitsu)")
+    with open(HARDWARE_FUJITSU, "rb") as handle:
+        raw = pickle.load(handle)
+    solution = {int(key): int(value) for key, value in raw.items()}
+    converted = model.convert_solution(solution)
+    with open(HARDWARE_FUJITSU_TIME, "rb") as handle:
+        timing = pickle.load(handle)[-1]
+
+    satisfied, total = count_satisfied(model, converted)
+    energy = qubo.value(solution) - qubo[()]
+    report.check("Best energy", HARDWARE["fujitsu_energy"], energy,
+                 detail=f"(the recorded run reports "
+                        f"{timing['energy']:,})")
+    report.assertion("every encoded constraint satisfied",
+                     model.is_solution_valid(converted),
+                     f"qubovert is_solution_valid True, penalty value "
+                     f"{model.value(converted):g}, so the target energy is "
+                     f"attained exactly")
+    report.check("Constraints satisfied (corrected Table VII)",
+                 HARDWARE["fujitsu_constraints"], satisfied,
+                 detail=f"of {total}; the table prints 1,273, which is the "
+                        f"f-term count")
+    report.check("Total time (s)", HARDWARE["fujitsu_time"],
+                 float(timing["time"]))
+
+    # -- D-Wave quantum annealer ----------------------------------------------
+    print("\n Quantum Annealer (D-Wave)")
+    with open(HARDWARE_DWAVE, "rb") as handle:
+        frame = pickle.load(handle)
+    best = frame.loc[frame["energy"].idxmin()]
+    sample = {index: int(best[index]) for index in range(HARDWARE["variables"])}
+    converted = model.convert_solution(sample)
+    satisfied, total = count_satisfied(model, converted)
+    gap = qubo.value(sample) - 0.0   # penalty value == energy above the target
+
+    report.check("Shots in the returned dataframe", HARDWARE["dwave_shots"],
+                 int(frame["num_occurrences"].sum()),
+                 detail=f"{len(frame):,} distinct samples")
+    report.check("Best energy over all samples", HARDWARE["dwave_energy"],
+                 float(best["energy"]),
+                 detail="recomputed from the QUBO: "
+                        f"{qubo.value(sample) - qubo[()]:,.0f}")
+    report.check("Constraints satisfied (corrected Table VII)",
+                 HARDWARE["dwave_constraints"], satisfied,
+                 detail=f"of {total}; the table prints 356, which is the "
+                        f"energy gap")
+    report.assertion(
+        "the printed 356 is the energy gap, not a constraint count",
+        gap == 356.0,
+        f"gap above the target is {gap:,.0f}; it upper-bounds the "
+        f"{total - satisfied} violated constraints but is not a count")
+    report.assertion(
+        "not a feasible solution, so no non-robustness certificate",
+        not model.is_solution_valid(converted),
+        f"{total - satisfied} of {total} constraints violated, "
+        f"chain break fraction {best['chain_break_fraction']:.3f}")
+
+    # -- rows that still cannot be checked ------------------------------------
+    print()
+    for solver in ("Gurobi", "Simulated Annealing"):
+        report.outcome(
+            UNAVAILABLE, f"Table VII, {solver} row (1,273 as printed; the "
+            f"corrected value would be 65 of 65)",
+            "no solution vector for this two-class instance was supplied for "
+            "this solver, so the row cannot be recomputed. Only the D-Wave and "
+            "Fujitsu samples were archived",
+            "supply the returned sample, as for the two hardware rows")
 
 
 # -----------------------------------------------------------------------------
 # Data availability
 # -----------------------------------------------------------------------------
+
+def ensure_archive(archive, marker, description, allow_extract):
+    """Unpack a data/ archive into the repository root if `marker` is absent."""
+    if os.path.exists(marker):
+        return True
+    if not (allow_extract and os.path.exists(archive)):
+        return False
+    print(f" [setup] {description} not extracted; unpacking {archive}")
+    with tarfile.open(archive, "r:gz") as handle:
+        handle.extractall(".")
+    return os.path.exists(marker)
+
 
 def ensure_data(sizes, allow_extract):
     """Extract data/qubo_and_networks.tar.gz if the instance data is absent."""
@@ -1648,6 +1939,13 @@ def main(argv=None):
         if os.path.exists(DATA_ARCHIVE):
             print(f"                   Unpack it with: tar xzf {DATA_ARCHIVE}")
 
+    gurobi_logs_available = ensure_archive(
+        GUROBI_LOG_ARCHIVE, GUROBI_LOG_PATTERN.format(size=5),
+        "the recorded Gurobi solver logs", not options.no_extract)
+    hardware_available = ensure_archive(
+        HARDWARE_ARCHIVE, HARDWARE_QUBO,
+        "the Table VII two-class hardware instance", not options.no_extract)
+
     check_structure(report, sizes, missing)
     check_fem_solutions(report, sizes, missing)
     check_z3(report, sizes, missing, deadline)
@@ -1655,10 +1953,11 @@ def main(argv=None):
     opt_in_deadline = Deadline(options.timeout
                                if options.timeout is not None
                                else OPT_IN_DEFAULT_TIMEOUT_SECONDS)
+    check_gurobi_logs(report, sizes, missing, gurobi_logs_available)
     check_gurobi(report, sizes, missing, with_gurobi, opt_in_deadline)
     check_sa(report, sizes, missing, with_sa, options.sa_seeds, opt_in_deadline)
     check_fem_replay(report, sizes, missing, with_fem, opt_in_deadline)
-    report_hardware(report)
+    check_hardware(report, hardware_available)
 
     report.summary(time.time() - started)
 
