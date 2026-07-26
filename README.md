@@ -13,12 +13,6 @@ python -m pip install -r requirements.txt
 python verify_paper.py
 ```
 
-The reproducibility work described here lives on the `fix/reproducibility-and-cpu-support` branch until it is merged. To run it before then, clone that branch instead and continue from line 2 above:
-
-```bash
-git clone -b fix/reproducibility-and-cpu-support https://github.com/seyrans/BNN-Robustness-Verification.git && cd BNN-Robustness-Verification
-```
-
 That is the whole procedure. It runs **102 checks** over **all four instances** (5x5, 7x7, 11x11, 28x28), takes **about 20 to 25 seconds** once the archives are unpacked, and needs **no GPU, no solver license, no network access and no annealing hardware**. Every check prints its own pass/fail line, and the script exits non-zero if any reported number fails to reproduce — or if too little ran for the report to mean anything. See *Verdict and exit status* below.
 
 **Tables III to VII are covered, with two exceptions noted below.** That includes the hardware rows of Table VII: the two-class instance, both hardware samples and the recorded Gurobi solver logs ship alongside the QUBOs, so a reviewer can re-evaluate them without any hardware or license.
