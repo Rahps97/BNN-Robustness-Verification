@@ -3497,6 +3497,24 @@ everywhere else in this report.
                              f"the scan failed: {exc!r}", size=size)
                 continue
 
+            if summary.minimum_adversarial_distance is None:
+                # Exceeding a bound is TIMEOUT, never FAIL -- the same rule the
+                # status check above follows, and the one check_z3()'s own scan
+                # has always followed. Z3 giving up returns d_min None with
+                # status INCONCLUSIVE_UNKNOWN, which neither confirms nor
+                # refutes the recorded minimum; comparing it against the record
+                # and calling the difference a failed reproduction is exactly
+                # the mistake this harness must not make.
+                report.outcome(TIMEOUT, "minimum-distance scan status",
+                               f"the scan ended with status "
+                               f"{summary.scan_status} after "
+                               f"{summary.total_runtime_seconds:.0f} s against "
+                               f"a bound of {budget:.0f} s; the record says "
+                               f"{recorded_scan}, d_min {recorded_dmin}",
+                               "raise --timeout, or --timeout 0 for no limit",
+                               size=size, claimed=recorded_scan)
+                continue
+
             scanned = (summary.scan_status,
                        summary.minimum_adversarial_distance)
             report.check("minimum-distance scan status",
