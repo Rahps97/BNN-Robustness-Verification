@@ -376,21 +376,81 @@ class FEM_Batched:
 
 
 
-def rule_no_limit(params, down_limit, up_limit, search_precision):
-    # for hyper-parameters without numerical range limit
-    return np.linspace(params * down_limit, params * up_limit, search_precision)
+# Default relative floor for the multiplicative candidate search.
+#
+# Candidates are generated as params * [down_limit, up_limit], so they scale
+# with the current value and the winner is written back every round. With
+# down_limit < 1 that makes zero an absorbing state: a value can at most be
+# halved per round but never recovers once it has drifted to (denormal) zero,
+# which is why runs were observed with Tmax ratcheting from 445.79 to ~1e-44
+# and with wd/mom/Tmin pinned at 5.605193857299268e-45, the smallest positive
+# float32 denormal.
+#
+# apply_relative_floors() gives every parameter a lower bound of
+# initial_value * FEM_PARAM_FLOOR_RATIO, which still leaves six orders of
+# magnitude of room below the starting point but stops the unbounded ratchet.
+# Override with the FEM_PARAM_FLOOR_RATIO environment variable; set it to 0 to
+# disable floors entirely and get the pre-fix behaviour.
+DEFAULT_PARAM_FLOOR_RATIO = float(os.environ.get("FEM_PARAM_FLOOR_RATIO", 1e-6))
 
-def rule_limit(params, down_limit, up_limit, limit_val, search_precision):
+
+def apply_relative_floors(params_dic, floor_ratio=None):
+    """Attach a 'min_val' lower bound to every parameter, in place.
+
+    The floor is relative to the parameter's value at the time of the call
+    (normally its initial value), so it adapts to parameters that live on very
+    different scales (lr ~ 1e-3, c_grad ~ 1e1, Tmax ~ 1e2). Parameters that
+    already carry an explicit 'min_val' are left alone, and a floor_ratio of 0
+    (or a non-positive value) disables the mechanism.
+    """
+    ratio = DEFAULT_PARAM_FLOOR_RATIO if floor_ratio is None else floor_ratio
+    if ratio <= 0:
+        return params_dic
+    for p in params_dic.values():
+        if p.get("min_val") is None:
+            p["min_val"] = abs(float(p["val"])) * ratio
+    return params_dic
+
+
+def _floored_base(params, min_val):
+    """Lift an already-collapsed value back onto the floor.
+
+    Without this the grid around a value below the floor would be entirely
+    clamped to a single point and the parameter could never climb back out.
+    """
+    base = float(params)
+    if min_val is not None and min_val > 0.0:
+        return max(base, float(min_val))
+    return base
+
+
+def rule_no_limit(params, down_limit, up_limit, search_precision, min_val=None):
+    # for hyper-parameters without numerical range limit
+    base = _floored_base(params, min_val)
+    low = base * down_limit
+    if min_val is not None and min_val > 0.0:
+        low = max(low, float(min_val))
+    high = max(base * up_limit, low)
+    return np.linspace(low, high, search_precision)
+
+def rule_limit(params, down_limit, up_limit, limit_val, search_precision, min_val=None):
     # for hyper-parameters with numerical range limit
-    limit = params * up_limit if params * up_limit < limit_val else limit_val
-    return np.linspace(params * down_limit, limit, search_precision)
+    base = _floored_base(params, min_val)
+    limit = base * up_limit if base * up_limit < limit_val else limit_val
+    low = base * down_limit
+    if min_val is not None and min_val > 0.0:
+        low = max(low, float(min_val))
+    limit = max(limit, low)
+    return np.linspace(low, limit, search_precision)
 
 def build_candidates(params_dic, param, search_precision):
     p = params_dic[param]
     if p["range_rule"] == "no_limit":
-        vals = rule_no_limit(p["val"], p["down_limit"], p["up_limit"], search_precision)
+        vals = rule_no_limit(p["val"], p["down_limit"], p["up_limit"], search_precision,
+                             min_val=p.get("min_val"))
     else:
-        vals = rule_limit(p["val"], p["down_limit"], p["up_limit"], p["limit_val"], search_precision)
+        vals = rule_limit(p["val"], p["down_limit"], p["up_limit"], p["limit_val"], search_precision,
+                          min_val=p.get("min_val"))
     return torch.as_tensor(vals, dtype=torch.float32)
 
 def collect_opt_params(params_dic, optimizer, global_params_backup=None):
@@ -949,6 +1009,16 @@ if __name__ == "__main__":
         'Tmin'   : {'val': Tmin,   'range_rule': 'no_limit', 'down_limit': 0.5, 'up_limit': 1.5},
         'Tmax'   : {'val': Tmax,   'range_rule': 'no_limit', 'down_limit': 0.5, 'up_limit': 1.5},
     }
+
+    # Give every parameter a relative lower bound so the multiplicative
+    # candidate search cannot ratchet it down to a denormal and get stuck
+    # there. Tune or disable with the FEM_PARAM_FLOOR_RATIO environment
+    # variable (0 disables); add an explicit 'min_val' above to override a
+    # single parameter.
+    apply_relative_floors(params_dic)
+    print(f"[FEM] Parameter floor ratio: {DEFAULT_PARAM_FLOOR_RATIO:g}")
+    for _k, _p in params_dic.items():
+        print(f"[FEM]   {_k}: val={_p['val']:.6g} min_val={(_p.get('min_val') or 0.0):.6g}")
 
     devices = [f"cuda:{i}" for i in get_idle_gpus()][:2]
     if not devices:
