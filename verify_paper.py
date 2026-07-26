@@ -224,6 +224,13 @@ HARDWARE = {
     "dwave_energy": -874318,    # Table VII, Quantum Annealer
     "dwave_time": 0.724,
     "dwave_constraints": 36,
+    # Not a figure the paper claims. Table VII reports 5,000 shots for this row,
+    # and that is correct: the run was made in two batches, of 4,000 and 1,000
+    # shots. Only the 4,000-shot batch was archived, and free D-Wave access has
+    # since ended, so the other 1,000 shots cannot be recovered or re-run. The
+    # value below is the size of the archived batch, which is what the shot
+    # check recomputes from, and the D-Wave energy and constraint figures above
+    # are likewise reproduced from that batch alone.
     "dwave_shots": 4000,
     "sa_constraints": 65,       # Table VII, Simulated Annealing
     "sa_time": 3.559,           # reported; machine dependent, so not asserted
@@ -2406,7 +2413,8 @@ from this repository at all; it is reported UNAVAILABLE, with the reason.
 
     report.check("Shots in the returned dataframe", HARDWARE["dwave_shots"],
                  int(frame["num_occurrences"].sum()),
-                 detail=f"{len(frame):,} distinct samples")
+                 detail=f"{len(frame):,} distinct samples, the archived batch "
+                        f"of the 5,000-shot run of Table VII")
     # Scored from the sample bits through the QUBO, not read out of the
     # dataframe's own `energy` column. The column only selects which row to
     # look at; if the recorded bits and the recorded energy disagree, this is
