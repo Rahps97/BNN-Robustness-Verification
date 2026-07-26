@@ -120,6 +120,103 @@ python QUBOCreator.py
 
 This script converts the robustness-verification problem for the trained neural network into a QUBO instance.
 
+#### Argmax tie-breaking in the misclassification constraint (`argmax_tie_aware`)
+
+The misclassification constraint built by `bnn_as_qubo.setup_optim_model` compares
+each competing class against the true class through a two's-complement sign bit
+`argmax_sign_{L}_{k}`. That bit is 1 exactly when
+
+```text
+logit_k > logit_gt      (strict)
+```
+
+`torch.argmax`, which defines the network's actual prediction, breaks ties towards
+the **lowest** index. So a competing class `k < gt` that merely *ties* the true
+class already misclassifies, while the strict comparison above does not fire. The
+condition that matches `torch.argmax` is
+
+```text
+logit_k >= logit_gt   for k < gt,     logit_k > logit_gt   for k > gt
+```
+
+which is exactly what `Z3.py` encodes (see the `Z3.py` bullet list below). The two
+formulations therefore differ on tie cases, and the QUBO one is the weaker of the
+two: it can miss a genuine adversarial example.
+
+**This does not affect any result in the paper or in this repository.** Every
+reported outcome is a *non-robustness* finding backed by a concrete perturbation,
+and a strict inequality that fires is a genuine misclassification. No robustness
+certificate is reported anywhere, and a robustness certificate is the only kind of
+answer the strict encoding could get wrong. What is affected is a claim about what
+an *exact* solve of the QUBO would prove: with the strict encoding, an exact solve
+that returns "infeasible" is not a sound robustness certificate.
+
+A concrete instance of the gap, on the shipped 11x11 network (`127x7x10`, true
+label 8): flipping the two perturbable pixels `{0, 1}` gives logits
+`[1, 3, 1, 1, -1, 1, -3, -1, 3, -3]`. The maximum, 3, is attained at both index 1
+and index 8, so `torch.argmax` returns 1 and the network misclassifies — but no
+competing logit *strictly* exceeds `logit_8`, so the strict QUBO does not admit
+this perturbation.
+
+`bnn_as_qubo.py` can encode the tie-aware condition instead. For `k < gt` it
+constrains `sum_class - 1` rather than `sum_class`, where
+`sum_class = (logit_gt - logit_k) / 2`; the sign bit is then 1 iff
+`sum_class <= 0`, i.e. iff `logit_k >= logit_gt`. **No auxiliary variables are
+added and no constraint is restructured** — only the constant term of one residual
+per competing class below the true label changes. The existing two's-complement
+field already has the range for it, because the last hidden width is `2**n - 1`
+(here 7), so the field spans `[-8, 7]` while `sum_class - 1` spans `[-8, 6]`. The
+builder raises `NotImplementedError` if a future architecture violates that.
+
+**It is opt-in and off by default**, because turning it on changes the QUBO matrix,
+and the QUBO shipped in this repository and every reported number were produced by
+the strict encoding. Like the FEM changes described under *Solver changes made
+after `paper-results-v1`* below, this is a post-tag change that, at its default,
+reproduces the tagged behaviour exactly. With the default the generated files are
+bit-identical to the committed ones:
+
+```bash
+python QUBOCreator.py
+md5sum QUBO/5x5/31x7x10/{QUBO_W.txt,Variables.json,Info.txt,Info_Relevant.txt}
+```
+
+To enable it, either export the environment variable
+
+```bash
+BNN_ARGMAX_TIE_AWARE=1 python QUBOCreator.py
+```
+
+or set `args.argmax_tie_aware = True` (`get_args.py`; `None`, the default, means
+"consult the environment variable").
+
+Two things worth knowing before enabling it:
+
+* The **shipped 5x5 instance is unchanged either way.** Its true label is 0, so
+  there is no class index below the true class and the tie-aware branch never
+  applies. `QUBOCreator.py` produces the same four files with the flag on or off.
+  The 7x7, 11x11 and 28x28 instances (labels 3, 8 and 2) do change.
+* The energy offset changes on the instances that change, so `Info.txt`'s
+  `Minimum Energy` — the target energy a feasible solution must reach — is
+  different. Solutions and target energies from the strict instances are not
+  comparable with tie-aware ones.
+
+The behaviour of the flag was checked against the network's own `torch.argmax` by
+building both encodings, constructing the forced assignment of every named QUBO
+variable for a given perturbation, and asking `qubovert` whether all encoded
+constraints hold:
+
+| instance | perturbations checked | tie-aware disagreements with `argmax` | strict disagreements |
+| --- | --- | --- | --- |
+| 5x5 (label 0) | all 65,536 | 0 | 0 (label 0 admits no tie case) |
+| 7x7 (label 3) | 9,989 | 0 | 62 |
+| 11x11 (label 8) | 48,245 | 0 | 5,653 |
+
+Every strict disagreement is a perturbation where the true class ties the maximum
+and `torch.argmax` awards the prediction to a lower index — that is, a real
+adversarial example the strict QUBO rejects. In particular, with the flag on the
+`{0, 1}` perturbation of the 11x11 instance is admitted as a feasible solution at
+Hamming distance 2, and with the flag off it is not.
+
 ### 4. Solve the generated QUBO
 
 The generated QUBO can be solved using any of the following solver scripts.
@@ -232,6 +329,8 @@ python Z3.py
 * hidden layers use the sign convention of `Binarize.forward`, mapping `>= 0` to `+1`;
 * misclassification is the exact negation of `torch.argmax(logits) == label`. Because `torch.argmax` returns the lowest index among tied maxima, this is `logits[c] >= logits[label]` for `c < label` and `logits[c] > logits[label]` for `c > label`.
 
+Note that this is *not* the condition the QUBO encodes by default: the QUBO uses the strict comparison for every competing class, so on tie cases the SMT baseline and the QUBO decide subtly different problems. See *Argmax tie-breaking in the misclassification constraint* above, including why no reported result is affected and how to make the QUBO match.
+
 `SAT` means an adversarial example exists within the budget, so the instance is **not robust**. `UNSAT` is a proof that none exists, so the instance is **certified robust** for that perturbation set. `UNKNOWN` means the timeout was reached and nothing is concluded.
 
 Because Z3 is exact, its verdict is ground truth against which the heuristic QUBO solvers (FEM, SA) can be checked.
@@ -309,6 +408,7 @@ All parameters are plain module-level constants; there is no configuration file.
 | Perturbation budget (epsilon) | `QUBOCreator.py` | `PetrubSizeBound`, used as `args.epsilon` |
 | Penalty weights in the QUBO | `QUBOCreator.py` | `args.LAMBDA` |
 | QUBO objective / bound constraint | `QUBOCreator.py` | `args.objective`, `args.include_perturbation_bound_constraint` |
+| Argmax tie-breaking in the QUBO | `get_args.py` | `args.argmax_tie_aware`, or the `BNN_ARGMAX_TIE_AWARE` environment variable (default off) |
 | SA reads, sweeps, schedule | `SA.py` | `NUM_READS`, `NUM_SWEEPS`, `beta_schedule_type` argument |
 | Repeated-SA settings | `SA_repeated.py` | `NUM_REPETITIONS`, `SEEDS`, `NUM_READS`, `NUM_SWEEPS`, `BETA_SCHEDULE_TYPE` |
 | FEM search budget | `FEM.py` | `total_rounds`, `search_precision`, `N_step`, `batch` (inside `__main__`) |

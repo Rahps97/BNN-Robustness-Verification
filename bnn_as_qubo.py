@@ -1,3 +1,4 @@
+import os
 import qubovert as qv
 import numpy as np
 from qubovert import boolean_var
@@ -5,6 +6,24 @@ from utils import to_boolean
 from qubovert._pcbo import _special_constraints_le_zero, _get_bounds, num_bits
 from qubovert.utils._warn import QUBOVertWarning
 from math import log2
+
+
+def tie_aware_argmax_enabled(args=None):
+    """Whether the argmax constraint should match ``torch.argmax`` tie-breaking.
+
+    Off by default. See ``argmax_tie_aware`` in the README: the default (strict)
+    encoding is the one that produced every QUBO shipped in this repository and
+    every reported result, and it is kept bit-identical. Enabling this changes
+    the QUBO matrix.
+
+    Enable it either by setting ``args.argmax_tie_aware = True`` or by exporting
+    the environment variable ``BNN_ARGMAX_TIE_AWARE=1``.
+    """
+    flag = getattr(args, 'argmax_tie_aware', None)
+    if flag is not None:
+        return bool(flag)
+    return os.environ.get('BNN_ARGMAX_TIE_AWARE', '0').strip().lower() \
+        not in ('', '0', 'false', 'no', 'off')
 
 def binarize(inp):
     output = inp.new(inp.size())
@@ -185,6 +204,10 @@ def add_sign_constraint(H, count, partial_poly, output_bool, lam, k_layer, j):
 
 def add_argmax_sign_constraint(H, count, partial_poly, output_bool, lam, k_layer, label):
     # print("Values", np.log2(count))
+    # Two's-complement encoding of ``partial_poly`` over
+    # ``msb_power + 1`` bits: the low bits are fresh ancillas with weights
+    # 1, 2, ..., 2^(msb_power-1) and ``output_bool`` is the sign bit, with
+    # weight -2^msb_power. Hence output_bool == 1 <=> partial_poly < 0.
     Sum = 0
     for power in range(int(np.log2(count)-1)):
         aux = 2 ** power
@@ -305,6 +328,32 @@ def setup_optim_model(sample_input_spin, sample_input_target, model, args):
     # print(idx)
     # print(param.size())
     # print(gt)
+    #
+    # sum_class below equals (logit_gt - logit_k) / 2, so the two's-complement
+    # sign bit argmax_sign_{idx}_{k} produced by add_argmax_sign_constraint is 1
+    # exactly when logit_k > logit_gt -- a STRICT inequality. torch.argmax, which
+    # defines the prediction, breaks ties towards the LOWEST index, so a
+    # competing class k < gt that merely *ties* the true class already
+    # misclassifies. Matching argmax therefore requires
+    #     logit_k >= logit_gt  for k < gt,   logit_k > logit_gt  for k > gt,
+    # which is exactly the condition Z3.py encodes.
+    #
+    # For k < gt the tie case is admitted by encoding sum_class - 1 instead of
+    # sum_class: the sign bit is then 1 iff sum_class - 1 < 0, i.e. iff
+    # sum_class <= 0, i.e. iff logit_k >= logit_gt. No extra variables are
+    # needed; only the constant term of one residual changes.
+    #
+    # This is OPT-IN and OFF BY DEFAULT, because turning it on changes the QUBO
+    # matrix and every QUBO and result shipped with this repository was produced
+    # with the strict encoding. See tie_aware_argmax_enabled() and the README.
+    tie_aware = tie_aware_argmax_enabled(args)
+    n_last_in = param.size()[1]
+    msb_power = int(np.log2(2 * (n_last_in + 1)) - 1)
+    if tie_aware and 2 ** msb_power < n_last_in + 1:
+        raise NotImplementedError(
+            'tie-aware argmax needs the two\'s-complement field to represent '
+            f'-{n_last_in + 1}, but it only reaches -{2 ** msb_power}; the '
+            'last hidden width must satisfy width + 1 == 2**n.')
     res = 0
     for k in range(param.size()[0]):
         sum_class = 0
@@ -314,6 +363,9 @@ def setup_optim_model(sample_input_spin, sample_input_target, model, args):
             for l in range(param.size()[1]):
                 sum_class += qubo_vars[f'partial_matrix_product_{idx}_{l}_{gt}']
                 sum_class -= qubo_vars[f'partial_matrix_product_{idx}_{l}_{k}']
+            if tie_aware and k < gt:
+                # admit logit_k == logit_gt, which torch.argmax resolves to k
+                sum_class = sum_class - 1
             # print("Count", 2*(param.size()[1]+1))
             add_argmax_sign_constraint(H, 2*(param.size()[1]+1), sum_class, output_bool, LAMBDA['hard_constraints'], idx, k)
             res += qubo_vars[f'argmax_sign_{idx}_{k}']

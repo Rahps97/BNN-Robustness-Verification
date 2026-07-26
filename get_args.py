@@ -87,6 +87,13 @@ iterable_args.include_perturbation_bound_constraint = [True]  # sum(taus) < epsi
 # iterable_args.epsilon = [3, 7, 15, 31, 63]  # if set to None, epsilon will be optimized by the annealer
 iterable_args.epsilon = [7]
 
+# Argmax tie-breaking in the misclassification constraint.
+#   None  -> consult the BNN_ARGMAX_TIE_AWARE environment variable (default off)
+#   False -> strict encoding, logit_k > logit_gt (what every shipped QUBO uses)
+#   True  -> tie-aware encoding matching torch.argmax (logit_k >= logit_gt for
+#            k < gt). This CHANGES the generated QUBO matrix; see the README.
+args.argmax_tie_aware = None
+
 # If pixels_to_perturb is None, We automatically find important pixels based on how frequently that pixel being used
 # for both classes.
 args.pixels_to_perturb = None
