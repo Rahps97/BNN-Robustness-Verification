@@ -2,11 +2,16 @@
 #
 # The 5x5 pipeline was run end to end against exactly these versions on a
 # CPU-only machine with Python 3.9.12: DatasetCreation.py, QUBOCreator.py,
-# SA.py, FEM.py and z3_baseline.py.
+# SA.py, FEM.py and verify_counterexamples.py. verify_paper.py needs nothing
+# beyond this list either.
 #
 # PyTorch is hardware dependent. Install the build matching your operating
 # system, processor architecture and CUDA/ROCm version; the pins below are
 # the CPU builds that were validated.
+#
+# pandas looks unused because no script imports it by name. It is needed all
+# the same: the archived D-Wave sample for Table VII is a pickled DataFrame,
+# so unpickling it requires pandas to be installed.
 #
 # gurobipy is deliberately not listed here: Gurobi.py also requires a valid
 # Gurobi license, which installing the package alone does not provide.
