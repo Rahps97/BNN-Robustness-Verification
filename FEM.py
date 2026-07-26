@@ -1,6 +1,7 @@
 import os
 import re
 import sys
+import copy
 import math
 import time
 import dimod
@@ -986,13 +987,21 @@ if __name__ == "__main__":
     })
 
     # Parallel execution
+    #
+    # Each worker must get a *deep* copy of params_dic. The workers run as
+    # threads in one process and fast_batched_coord_search() mutates the
+    # parameter state in place (params_dic[param]["val"] = sweep_best_val),
+    # so a shallow copy would hand every worker a fresh outer dict that still
+    # points at the same inner {'val': ...} dictionaries: the workers would
+    # then race on shared parameter state, and the parameters recorded next to
+    # a best energy would not necessarily be the ones that produced it.
     results = []
     gpu_loggers = {dev: GPULogger(dev, data_size=InputSize, base_folder= f"FEM_Solutions/logs_{InputSize}x{InputSize}") for dev in devices}
     with ThreadPoolExecutor(max_workers=len(devices)) as pool:
         futures = [
             pool.submit(
                 _run_search_on_device,
-                dev, J_matrix, h_vec, params_dic.copy(), betamode,
+                dev, J_matrix, h_vec, copy.deepcopy(params_dic), betamode,
                 N_step, batch, optimizer,
                 search_precision, total_rounds, seed_base,
                 shared_state,
