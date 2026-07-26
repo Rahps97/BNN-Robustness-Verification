@@ -13,15 +13,15 @@ python -m pip install -r requirements.txt
 python verify_paper.py
 ```
 
-That is the whole procedure. It runs **102 checks** over **all four instances** (5x5, 7x7, 11x11, 28x28), takes **about 20 to 25 seconds** once the archives are unpacked, and needs **no GPU, no solver license, no network access and no annealing hardware**. Every check prints its own pass/fail line, and the script exits non-zero if any reported number fails to reproduce — or if too little ran for the report to mean anything. See *Verdict and exit status* below.
+That is the whole procedure. It runs **105 checks** over **all four instances** (5x5, 7x7, 11x11, 28x28), takes **about 20 to 25 seconds** once the archives are unpacked, and needs **no GPU, no solver license, no network access and no annealing hardware**. Every check prints its own pass/fail line, and the script exits non-zero if any reported number fails to reproduce — or if too little ran for the report to mean anything. See *Verdict and exit status* below.
 
-**Tables III to VII are covered, with two exceptions noted below.** That includes the hardware rows of Table VII: the two-class instance, both hardware samples and the recorded Gurobi solver logs ship alongside the QUBOs, so a reviewer can re-evaluate them without any hardware or license.
+**Tables III to VII are covered, with one exception noted below.** That includes every row of Table VII: the two-class instance, the Gurobi and both hardware solution vectors, and the recorded Gurobi solver logs, all ship alongside the QUBOs, so a reviewer can re-evaluate them without any hardware or license.
 
-**The first exception is three of Table VI's five data columns.** Table VI reports repeated simulated annealing over 30 seeds, and its *% All Constraints Satisfying Solution*, *Average Unsatisfied Constraints* and *Median Time Taken* columns come from `SA_repeated.py`, a separate and much longer experiment that `verify_paper.py` does not invoke. What the default run does check for Table VI is the structure it shares with Tables III and IV: the variable count, the true constraint count and the energy offset. To reproduce the other three columns, run `python SA_repeated.py` directly.
+**The one exception is three of Table VI's five data columns.** Table VI reports repeated simulated annealing over 30 seeds, and its *% All Constraints Satisfying Solution*, *Average Unsatisfied Constraints* and *Median Time Taken* columns come from `SA_repeated.py`, a separate and much longer experiment that `verify_paper.py` does not invoke. What the default run does check for Table VI is the structure it shares with Tables III and IV: the variable count, the true constraint count and the energy offset. To reproduce the other three columns, run `python SA_repeated.py` directly.
 
 That script takes no command-line arguments: the run is configured by the constants at the top of the file. As shipped it selects the smallest instance (`INPUT_SIZE = SIZES[0]`, the 5x5) and runs `NUM_REPETITIONS = 30` seeds at `NUM_READS = 1024` and `NUM_SWEEPS = 1000`, which on the 5x5 costs about 6 s per repetition — roughly three minutes in total, against the 20 to 25 seconds of `verify_paper.py`. Edit `INPUT_SIZE` to reach the larger instances, which are correspondingly slower. Results are written to `SA_Repeated_Results/`, which is git-ignored, and nothing is written until all repetitions have finished, so an interrupted run leaves no output.
 
-**The second exception is the Gurobi cell of Table VII.** No solution vector was archived for that solver on the two-class instance, and the recorded solver logs that ship here cover Table IV only, not Table VII. Unlike simulated annealing, Gurobi cannot just be re-run to fill the gap — it needs a license. There is nothing left to recompute, so `verify_paper.py` reports the row as `UNAVAILABLE` with that reason — never as passing.
+**The Gurobi cell of Table VII used to be a second exception, and is not one any more.** No solution vector had been archived for that solver on the two-class instance, so the row was reported as `UNAVAILABLE`. The first author has since supplied the vector, and it now ships in `data/hardware_results.tar.gz` as `hardware/Gurobi/`, in the same format as the Fujitsu solution. `verify_paper.py` re-evaluates it exactly as it does the Fujitsu row: it reaches the target energy of **-874,674** with **all 65 encoded constraints satisfied**. His own `Verify_Gurobi.ipynb` ships beside it as the provenance. That run used a plain `m.optimize()` with no early-stopping callback, so Gurobi solved this QUBO to proven optimality, unlike the four Table IV runs the callback stopped short of a proof — the instance is far smaller. Its **61.447 s is not asserted**, because wall time is machine dependent: the author's notebook records 16.658 s for the same instance and a third machine takes 25 to 30 s, so a reviewer who re-runs it and sees 17 to 30 s is seeing the expected spread, the same way the SA row's time is handled.
 
 **Table VII's SA row is checked by re-running the solver, not by re-evaluating a stored vector.** No SA vector was archived either, but on this 113-variable instance simulated annealing is cheap, so `verify_paper.py` simply runs it as part of the default run: `dwave-samplers`' `SimulatedAnnealingSampler` at `num_reads = 1000`, up to three seeds, stopping at the first that reaches the target. It reaches the target energy of **-874,674** with **all 65 encoded constraints satisfied**, in about **2.3 s** per seed. Being a stochastic solver, reaching the target is `PASS` and falling short would be `INCONCLUSIVE`, never `FAIL`. For reference, the authors' own stored notebook output records 3.90 s and Table VII reports 3.559 s — the same result on three different machines.
 
@@ -36,7 +36,7 @@ Everything needed ships compressed in `data/` (5.8 MB in total), and `verify_pap
 | Table V | The Z3 SMT baseline is re-run at each instance's recorded epsilon, and every witness is reverse-checked with that same independent forward pass. |
 | Table V, `d_min` | Recomputed twice per instance: by exhaustive enumeration and by a Z3 minimum-distance scan. |
 | Table IV, Gurobi column | The incumbent is read out of each recorded solver log and compared with the table, along with the fact that no run proved optimality and that each was ended by the early-stopping callback rather than by a time limit — the no-improvement span in the log is checked against the limit `run_gurobi_all.py` ships for that instance. The reported energy score is then reached by a second, independent route, as the FEM column is: `dE` is taken against the `Minimum Energy` recorded in that instance's own `Info.txt`, so the score check fails if the shipped instance and the reported number disagree even when the log itself reads exactly as published. See *Gurobi Solver* below. |
-| Table VII | The two-class QUBO is rebuilt from the authors' pickled constraint dictionaries with the recipe in their own `Verify.ipynb`, and both hardware samples are re-evaluated against it: the Fujitsu solution attains the target energy exactly and satisfies all 65 encoded constraints in 0.366 s, and the best of D-Wave's 4,000 archived shots reaches −874,318, 356 above the target, satisfying 36 of 65. Those 4,000 are the archived batch of a 5,000-shot run, which was made in two batches of 4,000 and 1,000 shots; only the first was archived, and free D-Wave access has since ended, so the other 1,000 cannot be recovered or re-run. The reported quantum-annealer entry is therefore reproduced here from the archived batch, and the remaining 1,000 shots are not independently verifiable. The SA row has no archived vector, so simulated annealing is re-run on the same instance and reaches −874,674 with 65 of 65 in about 2.3 s. Only the Gurobi cell is reported `UNAVAILABLE` — see above for why. |
+| Table VII | The two-class QUBO is rebuilt from the authors' pickled constraint dictionaries with the recipe in their own `Verify.ipynb`, and both hardware samples are re-evaluated against it: the Fujitsu solution attains the target energy exactly and satisfies all 65 encoded constraints in 0.366 s, and the best of D-Wave's 4,000 archived shots reaches −874,318, 356 above the target, satisfying 36 of 65. Those 4,000 are the archived batch of a 5,000-shot run, which was made in two batches of 4,000 and 1,000 shots; only the first was archived, and free D-Wave access has since ended, so the other 1,000 cannot be recovered or re-run. The reported quantum-annealer entry is therefore reproduced here from the archived batch, and the remaining 1,000 shots are not independently verifiable. The SA row has no archived vector, so simulated annealing is re-run on the same instance and reaches −874,674 with 65 of 65 in about 2.3 s. The Gurobi vector, supplied by the first author after submission, is re-evaluated the same way as the Fujitsu one and also reaches −874,674 with 65 of 65; its 61.447 s is machine dependent and is not asserted. Every row of the table is therefore checked here. |
 
 Note that `E_off` is an **energy**, not a constraint count. Earlier versions of Tables III, IV and VI reported it in the *Total Constraints* column; `verify_paper.py` recomputes and reports the two separately so the correction can be checked directly. The same distinction applies to Table VII, whose *Constraints Satisfied* column prints 1,273 (`len(H.to_qubo())`, i.e. the instance's 1,272 QUBO terms plus the constant-offset entry) and 356 (an energy gap) rather than constraint counts; the instance has 65 encoded constraints in total, and the script prints the corrected figures next to the reported ones.
 
@@ -91,6 +91,12 @@ Note that `E_off` is an **energy**, not a constraint count. Earlier versions of 
                     time   : 2.3 s
    [     PASS     ] Constraints satisfied (corrected Table VII)    paper           65   recomputed           65   of 65
 
+ Gurobi (vector supplied by the first author after submission)
+   [     PASS     ] Best energy                                    paper     -874,674   recomputed     -874,674   the target energy, so this run found a global minimum
+   [     PASS     ] every encoded constraint satisfied             qubovert is_solution_valid True, penalty value 0, so the target energy is attained exactly
+   [     PASS     ] Constraints satisfied (corrected Table VII)    paper           65   recomputed           65   of 65
+                    note   : Table VII reports 61.447 s for this row; wall time is machine dependent and is not asserted
+
 ===============================================================================
  SUMMARY
 ===============================================================================
@@ -102,12 +108,12 @@ Note that `E_off` is an **energy**, not a constraint count. Earlier versions of 
  Table IV          Gurobi column                    4 not run
  Table IV          SA column                        4 not run
  Table IV          FEM solver replay                4 not run
- Table VII         hardware results                 17 passed, 1 unavailable
+ Table VII         hardware results                 20 passed
 
- 102 passed, 0 failed, 15 not run (--with-fem, --with-gurobi, --with-sa), 1 unavailable
- elapsed: 25.9 s
+ 105 passed, 0 failed, 15 not run (--with-fem, --with-gurobi, --with-sa)
+ elapsed: 25.8 s
 
- 16 check(s) were NOT run and are therefore NOT verified; see the reasons
+ 15 check(s) were NOT run and are therefore NOT verified; see the reasons
  above. Do not read them as confirmed.
 
  RESULT: PASS -- every check that was run reproduces the paper. (exit 0)
@@ -116,7 +122,7 @@ Note that `E_off` is an **energy**, not a constraint count. Earlier versions of 
 
 The caveats print **above** the verdict deliberately, so that the last line of the report is never a bare `PASS` sitting on top of the reasons it should be read with.
 
-The single `unavailable` row is Table VII's Gurobi cell, for which no solution vector was archived and which cannot be re-run without a license — see above for what that does and does not mean. The three structural rows shown as *not run* are the optional cross-check that the training set re-selects the same instance; that one needs `data/datasets.tar.gz` unpacked as well, and with it the run is 105 passed, 0 failed, still well under a minute.
+No row is `unavailable` any more. Table VII's Gurobi cell was the last one, and the vector the first author supplied closed it — see above. The three structural rows shown as *not run* are the optional cross-check that the training set re-selects the same instance; that one needs `data/datasets.tar.gz` unpacked as well, and with it the run is 108 passed, 0 failed, still well under a minute.
 
 The 15 remaining *not run* rows are the opt-in solver reruns listed under *Options* below. **A `not run` row is not a verified row**, which is why the script says so twice — once per row with the flag that would run it, and once in the closing `RESULT` block — and why the totals are reported separately rather than folded together.
 
@@ -152,8 +158,8 @@ A check is never silently omitted. Every row carries one of:
 
 | Flag | Effect | Cost and requirements |
 | --- | --- | --- |
-| *(none)*, or `--all` | all four instances, everything that needs nothing external | 102 checks in about 20-25 s once unpacked, CPU only |
-| `--quick` | 5x5 only, plus the Table VII rows, which are instance-independent | 39 checks in ~4 s; runs on a bare clone, unpacking only the two small archives (0.2 MB) rather than the 0.54 MB QUBO archive that expands to 137 MB |
+| *(none)*, or `--all` | all four instances, everything that needs nothing external | 105 checks in about 20-25 s once unpacked, CPU only |
+| `--quick` | 5x5 only, plus the Table VII rows, which are instance-independent | 42 checks in ~4 s; runs on a bare clone, unpacking only the two small archives (0.2 MB) rather than the 0.54 MB QUBO archive that expands to 137 MB |
 | `--instance 5,7` | a chosen subset | — |
 | `--with-gurobi` | re-solve the Table IV Gurobi column from scratch, instead of reading the recorded logs | needs a Gurobi license; hours. The common size-limited license caps at 2,000 variables, so 28x28 (2,235) is reported `UNAVAILABLE`, not `FAIL` |
 | `--with-sa` | Table IV SA column, at `SA.py`'s settings | minutes for 5x5, hours for 28x28; `--sa-seeds N` sets the seed count (default 3) |
@@ -174,7 +180,7 @@ That same fact gives a lower bound, and it is checked rather than assumed: with 
 | --- | --- | --- | --- |
 | `data/qubo_and_networks.tar.gz` | 0.54 MB | `QUBO/`, `TrainedNN/` | Tables III to VI: the four QUBO instances and their checkpoints |
 | `data/gurobi_logs.tar.gz` | 0.09 MB | `gurobi_logs/` | Table IV's Gurobi column, from the recorded solver logs |
-| `data/hardware_results.tar.gz` | 0.10 MB | `hardware/` | Table VII: the two-class QUBO, the Fujitsu and D-Wave samples, and the authors' `Verify.ipynb` and `SA_Verify.ipynb` |
+| `data/hardware_results.tar.gz` | 0.11 MB | `hardware/` | Table VII: the two-class QUBO, the Gurobi, Fujitsu and D-Wave solution vectors, and the authors' `Verify.ipynb`, `Verify_Gurobi.ipynb` and `SA_Verify.ipynb` |
 | `data/datasets.tar.gz` | 5.07 MB | `Dataset/` | only regenerating QUBOs from scratch with `QUBOCreator.py` |
 
 `verify_paper.py` unpacks the first three itself. To do it by hand:
@@ -188,7 +194,7 @@ tar xzf data/datasets.tar.gz            # only needed to rerun QUBOCreator.py
 
 They extract into the repository root at the paths every script already expects (`QUBO/7x7/...`, not `data/QUBO/7x7/...`). `QUBO/` and `Dataset/` expand to about 138 MB and 313 MB of dense text, which is why they ship compressed and why the expanded paths are git-ignored. The 5x5 files are tracked in the repository and are byte-identical to their copies in the archives, so extracting over them changes nothing and `git status` stays clean.
 
-The two notebooks inside `hardware_results.tar.gz` are the authors' own artifacts, kept for provenance — they show what was actually run on the hardware and how the SA row was produced. They are not the verification path: `verify_paper.py` does all of it, needs no Jupyter, and does not read them. The only edit made to either is in `SA_Verify.ipynb`, whose SA import was `from neal import SimulatedAnnealingSampler`; `neal` was folded into `dwave-samplers`, which is what `requirements.txt` pins, so the line now reads `from dwave.samplers import SimulatedAnnealingSampler`. The stored cell outputs are the authors' original ones. Note that `Verify.ipynb` covers the Fujitsu sample only, despite extracting next to `hardware/Dwave/`: it reads the Fujitsu solution and timing from `hardware/Result/` and `hardware/Time/` and never opens the D-Wave DataFrame. The D-Wave sample is checked by `verify_paper.py` instead.
+The three notebooks inside `hardware_results.tar.gz` are the authors' own artifacts, kept for provenance — they show what was actually run on the hardware, how the SA row was produced, and where the Gurobi row's solution vector came from. They are not the verification path: `verify_paper.py` does all of it, needs no Jupyter, and does not read them. Three edits were made across them, all recorded here. In `SA_Verify.ipynb` the SA import was `from neal import SimulatedAnnealingSampler`; `neal` was folded into `dwave-samplers`, which is what `requirements.txt` pins, so the line now reads `from dwave.samplers import SimulatedAnnealingSampler`. In `Verify_Gurobi.ipynb` the QUBO is opened by a bare filename, which only works from inside `hardware/QUBO/`, so the path now reads `QUBO/113-1273-28-15-zero-3-3-561020-H.pickle` like the other two notebooks; and its stored Gurobi banner had the license ID replaced with `<redacted>`, exactly as in the shipped solver logs. Every stored cell output is otherwise the authors' original, including the `state` vector that `hardware/Gurobi/` was built from and the `16.658` s runtime. Note that `Verify.ipynb` covers the Fujitsu sample only, despite extracting next to `hardware/Dwave/`: it reads the Fujitsu solution and timing from `hardware/Result/` and `hardware/Time/` and never opens the D-Wave DataFrame. The D-Wave sample is checked by `verify_paper.py` instead.
 
 ---
 
@@ -863,7 +869,7 @@ The archival DOI has not been minted yet. `.zenodo.json` and `CITATION.cff` hold
 
 **These terms are provisional until a release is tagged.** MIT and CC BY 4.0 are the intended licences and are what the repository is offered under today, but they are still pending written confirmation by all three authors and by their institution: the authors are UCSB-affiliated and the work is funded by NSF 2311295 and DOE DE-SC0021323, so the copyright holder line in `LICENSE` is being confirmed as well. Nothing above is settled enough to rely on for a permanent record — treat the grant as final only once this repository carries a tagged release, because the licence files inside an archived snapshot cannot be changed afterwards.
 
-"Data" means `Dataset/`, `QUBO/`, `TrainedNN/`, `FEM_best_configurations.txt`, `FEM_HYPERPARAMETERS.md` and the four archives in `data/` — the binarized MNIST subsets, the QUBO instances, the trained checkpoints, the recorded Gurobi logs and the Fujitsu and D-Wave samples. Everything executable is MIT, including the two notebooks that ship inside `data/hardware_results.tar.gz`.
+"Data" means `Dataset/`, `QUBO/`, `TrainedNN/`, `FEM_best_configurations.txt`, `FEM_HYPERPARAMETERS.md` and the four archives in `data/` — the binarized MNIST subsets, the QUBO instances, the trained checkpoints, the recorded Gurobi logs and the Gurobi, Fujitsu and D-Wave samples. Everything executable is MIT, including the three notebooks that ship inside `data/hardware_results.tar.gz`.
 
 Two licences rather than one because MIT is written for software and reads badly over a directory of `.txt` matrices, and because the conventional split for a code-plus-data release is a permissive software licence next to a Creative Commons data licence. Creative Commons itself recommends against putting CC licences on code, and Springer Nature's own licence chooser offers exactly this pairing. Neither licence is more restrictive than the other in practice: both permit commercial use, modification and redistribution, and both ask only for attribution.
 

@@ -91,11 +91,11 @@ Opt-in checks
                     --timeout 0 means NO limit, on every check including the
                     opt-in ones. A negative value is rejected.
 
-Table VII has no flag either: the two-class instance, both hardware samples and
-the authors' own notebooks ship in data/hardware_results.tar.gz, so the D-Wave
-and Fujitsu rows are re-evaluated by default and the SA row is re-run by default
-(a couple of seconds on that instance). Only the Gurobi cell is UNAVAILABLE, and
-it is the one number in the paper with nothing left to recompute.
+Table VII has no flag either: the two-class instance, all three archived solution
+vectors and the authors' own notebooks ship in data/hardware_results.tar.gz, so
+the Gurobi, D-Wave and Fujitsu rows are re-evaluated by default and the SA row is
+re-run by default (a couple of seconds on that instance). Every cell of the table
+is therefore checked here without a license and without hardware.
 
 Instance selection
 ------------------
@@ -211,6 +211,12 @@ HARDWARE_QUBO = f"{HARDWARE_DIR}/QUBO/{HARDWARE_STEM}.pickle"
 HARDWARE_FUJITSU = f"{HARDWARE_DIR}/Result/{HARDWARE_STEM}_solution.pickle"
 HARDWARE_FUJITSU_TIME = f"{HARDWARE_DIR}/Time/{HARDWARE_STEM}_time.pickle"
 HARDWARE_DWAVE = f"{HARDWARE_DIR}/Dwave/{HARDWARE_STEM}_solution_dataframe.pickle"
+# The Gurobi vector was not archived with the original delivery. The first author
+# supplied it after submission, as the `state` output of cell 4 of his own
+# Verify_Gurobi.ipynb, which ships next to it in the same archive as provenance.
+# It is stored in the same {str(index): bool} form as the Fujitsu solution above
+# so that the loader below is the same for both rows.
+HARDWARE_GUROBI = f"{HARDWARE_DIR}/Gurobi/{HARDWARE_STEM}_solution.pickle"
 
 # Recomputed properties of that instance, and the reported hardware results.
 HARDWARE = {
@@ -221,6 +227,13 @@ HARDWARE = {
     "fujitsu_energy": -874674,  # Table VII, Digital Annealer
     "fujitsu_time": 0.366,
     "fujitsu_constraints": 65,
+    "gurobi_energy": -874674,   # Table VII, Gurobi
+    "gurobi_constraints": 65,
+    # Reported; machine dependent, so not asserted, exactly as the SA row's time
+    # is not. The table's figure was measured on a 64-core Intel Xeon server. The
+    # first author's own notebook records 16.658 s for the same instance and a
+    # third machine takes 25 to 30 s.
+    "gurobi_time": 61.447,
     "dwave_energy": -874318,    # Table VII, Quantum Annealer
     "dwave_time": 0.724,
     "dwave_constraints": 36,
@@ -364,8 +377,9 @@ QUOTA_GUROBI = 1
 QUOTA_SA = 2          # the solver run, and the reverse check on the BNN
 QUOTA_FEM_REPLAY = 1
 # Table VII is a single instance, not one per size: 5 structural checks,
-# 4 Fujitsu, 5 D-Wave, 3 SA and the one UNAVAILABLE Gurobi row.
-QUOTA_HARDWARE = 18
+# 3 Gurobi, 4 Fujitsu, 5 D-Wave and 3 SA. The Gurobi row owes one fewer than the
+# Fujitsu row because its runtime is machine dependent and is not asserted.
+QUOTA_HARDWARE = 20
 
 
 def expected_check_counts(sizes, missing, resources):
@@ -2232,6 +2246,12 @@ HARDWARE_SA_CHECK_NAMES = (
     "Constraints satisfied (corrected Table VII)",
 )
 
+HARDWARE_GUROBI_CHECK_NAMES = (
+    "Best energy",
+    "every encoded constraint satisfied",
+    "Constraints satisfied (corrected Table VII)",
+)
+
 
 def check_hardware_sa(report, model, qubo, deadline):
     """Table VII's SA row: no vector was archived, so re-run the solver here.
@@ -2313,13 +2333,13 @@ def check_hardware(report, available, deadline):
                    GROUP_HARDWARE)
     report.note("""
 Table VII was produced on a D-Wave quantum annealer and on Fujitsu's Digital
-Annealer, on a separate two-class instance. That instance, both hardware
-solutions and the authors' own Verify.ipynb and SA_Verify.ipynb now ship in
-data/hardware_results.tar.gz, so the rows can be checked here. The hardware
-itself is not re-run -- these are the recorded samples, re-evaluated against the
-QUBO and against every encoded constraint. The SA row is the exception: no SA
-vector was archived, so the solver is simply re-run below, which on this
-instance costs a couple of seconds.
+Annealer, on a separate two-class instance. That instance, the Gurobi and both
+hardware solutions and the authors' own Verify.ipynb, Verify_Gurobi.ipynb and
+SA_Verify.ipynb now ship in data/hardware_results.tar.gz, so the rows can be
+checked here. The hardware itself is not re-run -- these are the recorded
+samples, re-evaluated against the QUBO and against every encoded constraint. The
+SA row is the exception: no SA vector was archived, so the solver is simply
+re-run below, which on this instance costs a couple of seconds.
 
 READ THIS BEFORE THE ROWS BELOW. Table VII's "Constraints Satisfied" column
 currently prints 1,273 for Gurobi / DA / SA and 356 for the QA. Neither figure
@@ -2336,11 +2356,10 @@ is a constraint count. This instance has 65 encoded constraints in total:
 
 This is the same confusion between an energy and a constraint count that was
 corrected in Tables III, IV and VI, and Table VII needs the same correction.
-The rows below check the CORRECTED column -- 65 out of 65 for the Digital
-Annealer and for simulated annealing, 36 out of 65 for the quantum annealer --
-together with the energies and runtimes, which are what the solvers actually
-reported. Gurobi's cell is the one number in the paper that cannot be checked
-from this repository at all; it is reported UNAVAILABLE, with the reason.
+The rows below check the CORRECTED column -- 65 out of 65 for Gurobi, for the
+Digital Annealer and for simulated annealing, 36 out of 65 for the quantum
+annealer -- together with the energies and runtimes, which are what the solvers
+actually reported.
 """)
     print()
 
@@ -2443,16 +2462,38 @@ from this repository at all; it is reported UNAVAILABLE, with the reason.
     print("\n Simulated Annealing (re-run here; no sample was archived)")
     check_hardware_sa(report, model, qubo, deadline)
 
-    # -- the one row that still cannot be checked ------------------------------
-    print()
-    report.outcome(
-        UNAVAILABLE, "Table VII, Gurobi row (1,273 as printed; the corrected "
-        "value would be 65 of 65)",
-        "no Gurobi solution vector for this two-class instance was supplied, "
-        "and the recorded solver logs that ship here cover Table IV only. "
-        "Unlike SA, Gurobi cannot simply be re-run: it needs a license. This "
-        "is the only number in the paper with nothing left to recompute",
-        "supply the returned sample, as for the two hardware rows")
+    # -- Gurobi, from the vector supplied after submission ----------------------
+    print("\n Gurobi (vector supplied by the first author after submission)")
+    if not os.path.exists(HARDWARE_GUROBI):
+        # Only reachable with an archive predating the supplied vector.
+        report_all(report, UNAVAILABLE, HARDWARE_GUROBI_CHECK_NAMES,
+                   f"{HARDWARE_GUROBI} is not present",
+                   f"re-extract with: tar xzf {HARDWARE_ARCHIVE}",
+                   claimed=HARDWARE["gurobi_constraints"])
+        return
+    with open(HARDWARE_GUROBI, "rb") as handle:
+        raw = pickle.load(handle)
+    solution = {int(key): int(value) for key, value in raw.items()}
+    converted = model.convert_solution(solution)
+    satisfied, total = count_satisfied(model, converted)
+
+    # Scored the same way the Fujitsu row above is: through the rebuilt QUBO,
+    # not read back from anything the solver recorded.
+    report.check(HARDWARE_GUROBI_CHECK_NAMES[0], HARDWARE["gurobi_energy"],
+                 qubo.value(solution) - qubo[()],
+                 detail="the target energy, so this run found a global minimum")
+    report.assertion(HARDWARE_GUROBI_CHECK_NAMES[1],
+                     model.is_solution_valid(converted),
+                     f"qubovert is_solution_valid True, penalty value "
+                     f"{model.value(converted):g}, so the target energy is "
+                     f"attained exactly")
+    report.check(HARDWARE_GUROBI_CHECK_NAMES[2],
+                 HARDWARE["gurobi_constraints"], satisfied,
+                 detail=f"of {total}; the table printed 1,273 here too, the "
+                        f"same QUBO term count")
+    print(f"{'':<20}note   : Table VII reports "
+          f"{HARDWARE['gurobi_time']} s for this row; wall time is machine "
+          f"dependent and is not asserted")
 
 
 # -----------------------------------------------------------------------------
