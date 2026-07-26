@@ -26,7 +26,7 @@ The default run
 
 The default needs nothing beyond this repository and the packages in
 requirements.txt: no GPU, no solver license, no network, no special hardware.
-It covers every instance and takes a couple of minutes.
+It covers every instance and takes well under a minute.
 
   Tables III, IV, VI   Each QUBO instance is rebuilt from scratch with the
                        authors' own builder, ``bnn_as_qubo.setup_optim_model``,
@@ -64,9 +64,11 @@ Opt-in checks
                     Opt-in checks default to 900 s each, because an unbounded
                     Gurobi run on these instances takes about a day.
 
-Table VII (D-Wave and Fujitsu hardware) has no flag: it needs hardware access
-and an instance that is not in this repository. It is always reported as NOT
-VERIFIABLE.
+Table VII has no flag either: the two-class instance, both hardware samples and
+the authors' own notebooks ship in data/hardware_results.tar.gz, so the D-Wave
+and Fujitsu rows are re-evaluated by default and the SA row is re-run by default
+(a couple of seconds on that instance). Only the Gurobi cell is UNAVAILABLE, and
+it is the one number in the paper with nothing left to recompute.
 
 Instance selection
 ------------------
@@ -166,7 +168,20 @@ HARDWARE = {
     "dwave_time": 0.724,
     "dwave_constraints": 36,
     "dwave_shots": 4000,
+    "sa_constraints": 65,       # Table VII, Simulated Annealing
+    "sa_time": 3.559,           # reported; machine dependent, so not asserted
 }
+
+# Table VII's SA row is the one default check that runs a stochastic solver
+# rather than re-evaluating an archived vector, because no SA vector was
+# archived. It is affordable only because this instance is small: 113 variables
+# and about 2.3 s per seed at the num_reads the authors' own SA_Verify.ipynb
+# uses. Table IV's SA column stays behind --with-sa, where one instance takes
+# minutes to hours. Seeds are tried in order and the loop stops at the first one
+# that reaches the target, so the usual cost is a single seed; the spares are
+# there so that an unlucky draw is not reported as a shortfall.
+HARDWARE_SA_READS = 1000
+HARDWARE_SA_SEEDS = (0, 1, 2)
 
 GUROBI_LOG_DIR = "gurobi_logs"
 GUROBI_LOG_PATTERN = GUROBI_LOG_DIR + "/GurobiLog_{size}x{size}.txt"
@@ -1756,23 +1771,101 @@ def count_satisfied(model, solution):
     return satisfied, total
 
 
-def check_hardware(report, available):
-    report.section("Table VII -- quantum and digital annealing hardware",
+def check_hardware_sa(report, model, qubo, deadline):
+    """Table VII's SA row: no vector was archived, so re-run the solver here.
+
+    Unlike the two hardware rows this is not a re-evaluation of a recorded
+    sample -- simulated annealing is cheap enough on this instance to just run
+    it. Being stochastic, reaching the target is PASS and falling short is
+    INCONCLUSIVE, never FAIL.
+    """
+    target = -float(qubo[()])
+    try:
+        from dwave.samplers import SimulatedAnnealingSampler
+    except ImportError as exc:
+        report.outcome(UNAVAILABLE, "Table VII, Simulated Annealing row",
+                       f"dimod / dwave-samplers not installed ({exc})",
+                       "pip install -r requirements.txt",
+                       claimed=HARDWARE["sa_constraints"])
+        return
+
+    print(f"   running up to {len(HARDWARE_SA_SEEDS)} seed(s) at "
+          f"{HARDWARE_SA_READS:,} reads, stopping at the first that reaches "
+          f"the target ...", flush=True)
+    sampler = SimulatedAnnealingSampler()
+    energies, best_sample = [], None
+    deadline.reset()
+    started = time.perf_counter()
+    for seed in HARDWARE_SA_SEEDS:
+        sampleset = sampler.sample_qubo(qubo.Q, num_reads=HARDWARE_SA_READS,
+                                        seed=seed)
+        sample = {int(key): int(value)
+                  for key, value in sampleset.first.sample.items()}
+        # Recomputed from the QUBO rather than taken from the sampler, exactly
+        # as the Fujitsu row above is.
+        energy = float(qubo.value(sample) - qubo[()])
+        if not energies or energy < min(energies):
+            best_sample = sample
+        energies.append(energy)
+        if energy <= target or deadline.expired():
+            break
+    runtime = time.perf_counter() - started
+
+    report.solver_run(
+        "SA best energy (Table VII)", None,
+        paper_energy=target, target_energy=target,
+        energies=energies, runtime=runtime,
+        hint="rerun -- SA is stochastic. The authors' own SA_Verify.ipynb, in "
+             f"{HARDWARE_ARCHIVE}, is the same computation")
+    print(f"{'':<20}note   : Table VII reports "
+          f"{HARDWARE['sa_time']} s for this row; wall time is machine "
+          f"dependent and is not asserted")
+
+    converted = model.convert_solution(best_sample)
+    satisfied, total = count_satisfied(model, converted)
+
+    if min(energies) > target:
+        report.outcome(
+            INCONCLUSIVE, "Constraints satisfied (corrected Table VII)",
+            "this run of SA did not reach the target energy, so its constraint "
+            "count says nothing about the reported row",
+            "rerun, or raise HARDWARE_SA_READS",
+            claimed=HARDWARE["sa_constraints"], recomputed=satisfied)
+        return
+
+    report.assertion("every encoded constraint satisfied",
+                     model.is_solution_valid(converted),
+                     f"qubovert is_solution_valid True, penalty value "
+                     f"{model.value(converted):g}, so the target energy is "
+                     f"attained exactly")
+    report.check("Constraints satisfied (corrected Table VII)",
+                 HARDWARE["sa_constraints"], satisfied,
+                 detail=f"of {total}; the table prints 1,273 here too, the "
+                        f"same QUBO term count")
+
+
+def check_hardware(report, available, deadline):
+    report.section("Table VII -- the two-class instance: hardware rows and SA",
                    "Table VII         hardware results")
     report.note("""
 Table VII was produced on a D-Wave quantum annealer and on Fujitsu's Digital
 Annealer, on a separate two-class instance. That instance, both hardware
-solutions and the authors' own Verify.ipynb now ship in
+solutions and the authors' own Verify.ipynb and SA_Verify.ipynb now ship in
 data/hardware_results.tar.gz, so the rows can be checked here. The hardware
 itself is not re-run -- these are the recorded samples, re-evaluated against the
-QUBO and against every encoded constraint.
+QUBO and against every encoded constraint. The SA row is the exception: no SA
+vector was archived, so the solver is simply re-run below, which on this
+instance costs a couple of seconds.
 
 READ THIS BEFORE THE ROWS BELOW. Table VII's "Constraints Satisfied" column
 currently prints 1,273 for Gurobi / DA / SA and 356 for the QA. Neither figure
 is a constraint count. This instance has 65 encoded constraints in total:
 
-  * 1,273 is the f-term count carried in the instance's file name; the QUBO
-    itself has 1,272 quadratic and linear terms.
+  * 1,273 is a count of QUBO terms, not of constraints. It is the size of the
+    dictionary the authors' own builder returns, len(H.to_qubo()): this
+    instance's 1,272 linear and quadratic terms plus the single constant-offset
+    entry. Both of those numbers are recomputed below. The instance's file
+    name carries the same pair -- 113-1273-... is 113 variables, 1,273 terms.
   * 356 is the QA's energy gap above the target, not a number of constraints.
     It happens to upper-bound the violations, as energy gaps do here, but it
     is 5.5x the total number of constraints that exist.
@@ -1780,8 +1873,10 @@ is a constraint count. This instance has 65 encoded constraints in total:
 This is the same confusion between an energy and a constraint count that was
 corrected in Tables III, IV and VI, and Table VII needs the same correction.
 The rows below check the CORRECTED column -- 65 out of 65 for the Digital
-Annealer and 36 out of 65 for the quantum annealer -- together with the
-energies and runtimes, which are what the hardware actually reported.
+Annealer and for simulated annealing, 36 out of 65 for the quantum annealer --
+together with the energies and runtimes, which are what the solvers actually
+reported. Gurobi's cell is the one number in the paper that cannot be checked
+from this repository at all; it is reported UNAVAILABLE, with the reason.
 """)
     print()
 
@@ -1837,7 +1932,8 @@ energies and runtimes, which are what the hardware actually reported.
     report.check("Constraints satisfied (corrected Table VII)",
                  HARDWARE["fujitsu_constraints"], satisfied,
                  detail=f"of {total}; the table prints 1,273, which is the "
-                        f"f-term count")
+                        f"QUBO term count len(H.to_qubo()) = 1,272 terms + "
+                        f"the offset entry")
     report.check("Total time (s)", HARDWARE["fujitsu_time"],
                  float(timing["time"]))
 
@@ -1873,16 +1969,20 @@ energies and runtimes, which are what the hardware actually reported.
         f"{total - satisfied} of {total} constraints violated, "
         f"chain break fraction {best['chain_break_fraction']:.3f}")
 
-    # -- rows that still cannot be checked ------------------------------------
+    # -- simulated annealing, re-run rather than re-evaluated -----------------
+    print("\n Simulated Annealing (re-run here; no sample was archived)")
+    check_hardware_sa(report, model, qubo, deadline)
+
+    # -- the one row that still cannot be checked ------------------------------
     print()
-    for solver in ("Gurobi", "Simulated Annealing"):
-        report.outcome(
-            UNAVAILABLE, f"Table VII, {solver} row (1,273 as printed; the "
-            f"corrected value would be 65 of 65)",
-            "no solution vector for this two-class instance was supplied for "
-            "this solver, so the row cannot be recomputed. Only the D-Wave and "
-            "Fujitsu samples were archived",
-            "supply the returned sample, as for the two hardware rows")
+    report.outcome(
+        UNAVAILABLE, "Table VII, Gurobi row (1,273 as printed; the corrected "
+        "value would be 65 of 65)",
+        "no Gurobi solution vector for this two-class instance was supplied, "
+        "and the recorded solver logs that ship here cover Table IV only. "
+        "Unlike SA, Gurobi cannot simply be re-run: it needs a license. This "
+        "is the only number in the paper with nothing left to recompute",
+        "supply the returned sample, as for the two hardware rows")
 
 
 # -----------------------------------------------------------------------------
@@ -2045,7 +2145,7 @@ def main(argv=None):
     check_gurobi(report, sizes, missing, with_gurobi, opt_in_deadline)
     check_sa(report, sizes, missing, with_sa, options.sa_seeds, opt_in_deadline)
     check_fem_replay(report, sizes, missing, with_fem, opt_in_deadline)
-    check_hardware(report, hardware_available)
+    check_hardware(report, hardware_available, deadline)
 
     report.summary(time.time() - started)
 
