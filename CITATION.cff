@@ -19,8 +19,8 @@ abstract: >-
   The repository contains the QUBO construction, BNN training and binarized
   dataset preparation, simulated-annealing, Free Energy Machine, Gurobi and
   Z3/SMT solvers, independent counterexample checking, and verify_paper.py, a
-  single command that re-checks every number reported in Tables III to VII of
-  the paper.
+  single command that re-checks those entries of Tables III to VII of the paper
+  that can be recomputed from the shipped files.
 type: software
 authors:
   - family-names: Singh
