@@ -18,10 +18,12 @@ abstract: >-
   solvers as well as with Ising-style, annealing and quantum-inspired hardware.
   The repository contains the QUBO construction, BNN training and binarized
   dataset preparation, simulated-annealing, Free Energy Machine, Gurobi and
-  Z3/SMT solvers, independent counterexample checking, and verify_paper.py, a
-  single command that re-checks those entries of Tables II to VII of the paper,
-  and of the Section IV-B claims made in prose, that can be recomputed from the
-  shipped files.
+  Z3/SMT solvers, independent counterexample checking, a hidden-layer width
+  scaling sweep with its trained checkpoints and stored solver records, and
+  verify_paper.py, a single command that re-checks those entries of Tables II
+  to VII of the paper, of its hidden-layer width-scaling table, and of the
+  Section IV-B claims made in prose, that can be recomputed from the shipped
+  files.
 type: software
 authors:
   - family-names: Singh
