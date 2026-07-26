@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# The virtual environment the README's quick start creates in the repository
+# root. Without this a reviewer who follows those instructions verbatim gets an
+# untracked .venv/ in git status straight after a clean run.
+.venv/
+venv/
+.env/
+
+# Logs (including solver logs such as gurobi.log)
+*.log
+
+# Downloaded raw data
+mnist/
+
+# Solver output
+SA_Repeated_Results/
+FEM_Solutions/
+Z3_Results/
+gurobi_results.json
+
+# Instance data. Only the 5x5 instance is tracked, so a fresh clone can run
+# verify_paper.py --quick with no setup at all. The other three instances ship
+# compressed in data/ and extract into these same paths, so they are ignored
+# here. The 5x5 files inside the archives are byte-identical to the tracked
+# ones, so extracting over them leaves git status clean.
+Dataset/*
+!Dataset/5x5/
+QUBO/*
+!QUBO/5x5/
+TrainedNN/*
+!TrainedNN/5x5/
+
+# Unpacked from data/hardware_results.tar.gz and data/gurobi_logs.tar.gz.
+/hardware/
+/gurobi_logs/

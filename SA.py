@@ -32,7 +32,7 @@ def run_dwave_sa(Q_dict, num_reads=1000, num_sweeps=1000, beta_schedule_type="li
 Sizes = [5, 7, 11, 28]
 InputDataSize = {5: 31, 7: 63, 11: 127, 28: 1023}
 PetrubSize = {5: 16, 7: 32, 11: 64, 28: 256}
-PetrubSizeBound = {5: 3, 7: 32, 11: 32, 28: 128}
+PetrubSizeBound = {5: 8, 7: 32, 11: 32, 28: 128}
 
 # Variables
 InputSize = Sizes[0]

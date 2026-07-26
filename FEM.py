@@ -1,6 +1,7 @@
 import os
 import re
 import sys
+import copy
 import math
 import time
 import dimod
@@ -25,20 +26,38 @@ if hasattr(sys.stdout, "reconfigure"):
 
 
 def get_idle_gpus(threshold_mb=500):
-    """Return list of GPU indices with memory usage less than 'threshold_mb'."""
-    result = subprocess.run(
-        ["nvidia-smi", "--query-gpu=index,memory.used", "--format=csv,noheader,nounits"],
-        capture_output=True, text=True
-    )
+    """Return list of GPU indices with memory usage less than 'threshold_mb'.
+
+    Returns an empty list when nvidia-smi is not installed or produces no
+    usable output (CPU-only or non-NVIDIA machines), so the caller can fall
+    back to the CPU instead of crashing.
+    """
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index,memory.used", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True
+        )
+    except OSError:
+        return []
 
     idle = []
     for line in result.stdout.strip().split("\n"):
-        idx, used = map(int, re.split(r",\s*", line))
+        try:
+            idx, used = map(int, re.split(r",\s*", line))
+        except ValueError:
+            continue
         if used < threshold_mb:
             idle.append(idx)
 
     return idle
 
+# Adapted from dwave-neal 0.5.x, neal/sampler.py::_default_ising_beta_range
+# (Copyright 2018 D-Wave Systems Inc., Apache License 2.0,
+# http://www.apache.org/licenses/LICENSE-2.0). Reproduced verbatim, docstring
+# and comments included, apart from two changes: the rename to beta_range, and
+# cold_beta = log(10000)/min_delta_energy in place of log(100), i.e. a 0.01%
+# rather than a 1% cold-end flip target -- the comment below still states the
+# upstream 1%. See NOTICE.
 def beta_range(h, J):
     """Determine the starting and ending beta from h J
 
@@ -364,21 +383,81 @@ class FEM_Batched:
 
 
 
-def rule_no_limit(params, down_limit, up_limit, search_precision):
-    # for hyper-parameters without numerical range limit
-    return np.linspace(params * down_limit, params * up_limit, search_precision)
+# Default relative floor for the multiplicative candidate search.
+#
+# Candidates are generated as params * [down_limit, up_limit], so they scale
+# with the current value and the winner is written back every round. With
+# down_limit < 1 that makes zero an absorbing state: a value can at most be
+# halved per round but never recovers once it has drifted to (denormal) zero,
+# which is why runs were observed with Tmax ratcheting from 445.79 to ~1e-44
+# and with wd/mom/Tmin pinned at 5.605193857299268e-45, the smallest positive
+# float32 denormal.
+#
+# apply_relative_floors() gives every parameter a lower bound of
+# initial_value * FEM_PARAM_FLOOR_RATIO, which still leaves six orders of
+# magnitude of room below the starting point but stops the unbounded ratchet.
+# Override with the FEM_PARAM_FLOOR_RATIO environment variable; set it to 0 to
+# disable floors entirely and get the pre-fix behaviour.
+DEFAULT_PARAM_FLOOR_RATIO = float(os.environ.get("FEM_PARAM_FLOOR_RATIO", 1e-6))
 
-def rule_limit(params, down_limit, up_limit, limit_val, search_precision):
+
+def apply_relative_floors(params_dic, floor_ratio=None):
+    """Attach a 'min_val' lower bound to every parameter, in place.
+
+    The floor is relative to the parameter's value at the time of the call
+    (normally its initial value), so it adapts to parameters that live on very
+    different scales (lr ~ 1e-3, c_grad ~ 1e1, Tmax ~ 1e2). Parameters that
+    already carry an explicit 'min_val' are left alone, and a floor_ratio of 0
+    (or a non-positive value) disables the mechanism.
+    """
+    ratio = DEFAULT_PARAM_FLOOR_RATIO if floor_ratio is None else floor_ratio
+    if ratio <= 0:
+        return params_dic
+    for p in params_dic.values():
+        if p.get("min_val") is None:
+            p["min_val"] = abs(float(p["val"])) * ratio
+    return params_dic
+
+
+def _floored_base(params, min_val):
+    """Lift an already-collapsed value back onto the floor.
+
+    Without this the grid around a value below the floor would be entirely
+    clamped to a single point and the parameter could never climb back out.
+    """
+    base = float(params)
+    if min_val is not None and min_val > 0.0:
+        return max(base, float(min_val))
+    return base
+
+
+def rule_no_limit(params, down_limit, up_limit, search_precision, min_val=None):
+    # for hyper-parameters without numerical range limit
+    base = _floored_base(params, min_val)
+    low = base * down_limit
+    if min_val is not None and min_val > 0.0:
+        low = max(low, float(min_val))
+    high = max(base * up_limit, low)
+    return np.linspace(low, high, search_precision)
+
+def rule_limit(params, down_limit, up_limit, limit_val, search_precision, min_val=None):
     # for hyper-parameters with numerical range limit
-    limit = params * up_limit if params * up_limit < limit_val else limit_val
-    return np.linspace(params * down_limit, limit, search_precision)
+    base = _floored_base(params, min_val)
+    limit = base * up_limit if base * up_limit < limit_val else limit_val
+    low = base * down_limit
+    if min_val is not None and min_val > 0.0:
+        low = max(low, float(min_val))
+    limit = max(limit, low)
+    return np.linspace(low, limit, search_precision)
 
 def build_candidates(params_dic, param, search_precision):
     p = params_dic[param]
     if p["range_rule"] == "no_limit":
-        vals = rule_no_limit(p["val"], p["down_limit"], p["up_limit"], search_precision)
+        vals = rule_no_limit(p["val"], p["down_limit"], p["up_limit"], search_precision,
+                             min_val=p.get("min_val"))
     else:
-        vals = rule_limit(p["val"], p["down_limit"], p["up_limit"], p["limit_val"], search_precision)
+        vals = rule_limit(p["val"], p["down_limit"], p["up_limit"], p["limit_val"], search_precision,
+                          min_val=p.get("min_val"))
     return torch.as_tensor(vals, dtype=torch.float32)
 
 def collect_opt_params(params_dic, optimizer, global_params_backup=None):
@@ -804,7 +883,8 @@ def _run_search_on_device(
     for round_idx in range(1, total_rounds + 1):
         log(f"\n=== Round {round_idx}/{total_rounds} ===")
 
-        gpu_id = int(device.split(":")[-1])
+        device_index = device.split(":")[-1]
+        gpu_id = int(device_index) if device_index.isdigit() else 0
         gpu_seed_base = seed_base + gpu_id * 100_000 + round_idx * 2_000_000
 
         # --- Run a local FEM parameter search block (BASELINE_ROUNDS) ---
@@ -937,7 +1017,21 @@ if __name__ == "__main__":
         'Tmax'   : {'val': Tmax,   'range_rule': 'no_limit', 'down_limit': 0.5, 'up_limit': 1.5},
     }
 
+    # Give every parameter a relative lower bound so the multiplicative
+    # candidate search cannot ratchet it down to a denormal and get stuck
+    # there. Tune or disable with the FEM_PARAM_FLOOR_RATIO environment
+    # variable (0 disables); add an explicit 'min_val' above to override a
+    # single parameter.
+    apply_relative_floors(params_dic)
+    print(f"[FEM] Parameter floor ratio: {DEFAULT_PARAM_FLOOR_RATIO:g}")
+    for _k, _p in params_dic.items():
+        print(f"[FEM]   {_k}: val={_p['val']:.6g} min_val={(_p.get('min_val') or 0.0):.6g}")
+
     devices = [f"cuda:{i}" for i in get_idle_gpus()][:2]
+    if not devices:
+        # No idle NVIDIA GPU (or no nvidia-smi at all): run a single CPU worker.
+        print("[FEM] No idle CUDA device found; falling back to CPU.")
+        devices = ["cpu"]
     total_rounds = 4000
     SYNC_INTERVAL = 2000
     EARLY_STOP_MARGIN = 0.30
@@ -970,13 +1064,21 @@ if __name__ == "__main__":
     })
 
     # Parallel execution
+    #
+    # Each worker must get a *deep* copy of params_dic. The workers run as
+    # threads in one process and fast_batched_coord_search() mutates the
+    # parameter state in place (params_dic[param]["val"] = sweep_best_val),
+    # so a shallow copy would hand every worker a fresh outer dict that still
+    # points at the same inner {'val': ...} dictionaries: the workers would
+    # then race on shared parameter state, and the parameters recorded next to
+    # a best energy would not necessarily be the ones that produced it.
     results = []
     gpu_loggers = {dev: GPULogger(dev, data_size=InputSize, base_folder= f"FEM_Solutions/logs_{InputSize}x{InputSize}") for dev in devices}
     with ThreadPoolExecutor(max_workers=len(devices)) as pool:
         futures = [
             pool.submit(
                 _run_search_on_device,
-                dev, J_matrix, h_vec, params_dic.copy(), betamode,
+                dev, J_matrix, h_vec, copy.deepcopy(params_dic), betamode,
                 N_step, batch, optimizer,
                 search_precision, total_rounds, seed_base,
                 shared_state,

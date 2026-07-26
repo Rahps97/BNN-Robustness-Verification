@@ -1,0 +1,3251 @@
+#!/usr/bin/env python3
+"""verify_paper.py -- one command that re-checks the paper's numerical claims.
+
+Run it from the repository root:
+
+    python verify_paper.py
+
+Every check prints the value claimed in the paper, the value recomputed here,
+and an outcome.
+
+Outcomes
+--------
+
+    PASS            recomputed and matches the paper
+    FAIL            recomputed and does NOT match the paper
+    SKIPPED         not requested; the flag that would run it is shown
+    UNAVAILABLE     cannot be run here (no license, no data, no hardware)
+    TIMEOUT         started but exceeded --timeout
+    INCONCLUSIVE    ran, but the solver is stochastic and fell short; this
+                    neither confirms nor refutes the reported number
+    NOT VERIFIABLE  no offline substitute exists at all
+
+Verdict and exit status
+-----------------------
+
+    RESULT: PASS          0   at least one check ran, none failed
+    RESULT: FAIL          1   a reported number did not reproduce
+    (no report)           2   bad command line; argparse prints usage and this
+                              status is argparse's own, so no verdict can use it
+    RESULT: INCONCLUSIVE  3   nothing failed, but too little ran to say
+                              anything: either no check ran at all, or a whole
+                              default check group produced no PASS or FAIL
+                              because its data, archive or dependency is absent
+    RESULT: HARNESS ERROR 4   the script did not emit the number of report
+                              entries its own configuration calls for, so the
+                              report cannot be trusted; see below
+
+A green run therefore requires that something was actually verified. A clone
+with its data archives missing, or a CI step whose extraction silently failed,
+exits 3 and says INCONCLUSIVE rather than PASS.
+
+Exit 4 is the harness checking itself. Every check group declares in advance
+how many report entries it must produce for the selected instances, flags and
+available resources (see expected_check_counts). If the totals disagree, some
+check was dropped without leaving a record and the run is reported as a harness
+error, not as a pass. A check that cannot run must always leave a SKIPPED,
+UNAVAILABLE, TIMEOUT or INCONCLUSIVE entry behind, never nothing at all.
+
+The default run
+---------------
+
+The default needs nothing beyond this repository and the packages in
+requirements.txt: no GPU, no solver license, no network, no special hardware.
+It covers every instance and takes well under a minute.
+
+  Table II             The test accuracy and the test-set size of each trained
+                       network are read out of the Info.txt that ships beside
+                       its checkpoint, and the printed percentage is recomputed
+                       from the two counts. The training-set size is counted
+                       from the shipped DataLoader in data/datasets.tar.gz.
+
+  Tables III, IV, VI   Each QUBO instance is rebuilt from scratch with the
+                       authors' own builder, ``bnn_as_qubo.setup_optim_model``,
+                       and the number of variables, the number of encoded
+                       constraints and the constant energy offset are compared
+                       with the tables. The rebuilt matrix is also compared
+                       entry by entry with the shipped ``QUBO_W.txt``.
+
+  Table IV (FEM)       The FEM solution vectors recorded in
+                       ``FEM_best_configurations.txt`` are evaluated against the
+                       shipped QUBO matrices as x^T Q x and compared with the
+                       target energy. Each solution is then decoded into a pixel
+                       perturbation and replayed through an independent NumPy
+                       implementation of the BNN forward pass.
+
+  Table V              The Z3/SMT baseline is re-run on each instance at the
+                       epsilon recorded in its ``Info.txt``, and every witness is
+                       reverse-checked with that same independent forward pass.
+
+  Table V (d_min)      The minimum adversarial distance is recomputed by
+                       exhaustive enumeration (the paper's method for 5x5) and
+                       by a Z3 minimum-distance scan (the paper's method for the
+                       other rows). Both are run on every instance, so each
+                       number is confirmed twice by independent means.
+
+Opt-in checks
+-------------
+
+    --with-gurobi   Table IV Gurobi column. Needs a Gurobi license.
+    --with-sa       Table IV SA column. Minutes for 5x5, hours for 28x28.
+    --with-fem      Replays the FEM solver at its recorded hyperparameters
+                    instead of only verifying the recorded solution vectors.
+    --everything    All of the above.
+    --timeout S     Per-check wall-clock bound; exceeding it is TIMEOUT, not FAIL.
+                    Opt-in checks default to 900 s each, because an unbounded
+                    Gurobi run on these instances takes about a day.
+                    --timeout 0 means NO limit, on every check including the
+                    opt-in ones. A negative value is rejected.
+
+Table VII has no flag either: the two-class instance, all three archived solution
+vectors and the authors' own notebooks ship in data/hardware_results.tar.gz, so
+the Gurobi, D-Wave and Fujitsu rows are re-evaluated by default and the SA row is
+re-run by default (a couple of seconds on that instance). Every cell of the table
+is therefore checked here without a license and without hardware. The coupling
+and coefficient statistics Section IV-B gives for that same instance are
+recomputed alongside it, as is Section IV-B's linear-constraint-form comparison:
+the feasible-perturbation count, d_min and the two archived vectors'
+perturbation sizes are asserted, and the solver runtimes that go with them are
+printed but never asserted, because wall time is machine dependent.
+
+One reported figure has no offline substitute and is not checked anywhere here.
+Table VII's 0.724 s for the quantum annealer, and the "~20 microseconds per
+shot" that follows from it, come from the run log of the D-Wave session. The
+archived DataFrame carries no timing metadata -- its columns are the 113 spins
+plus chain_break_fraction, energy and num_occurrences -- and hardware/Time/
+covers the Fujitsu row only. See README.md.
+
+Instance selection
+------------------
+
+    --all               verify every instance (the default)
+    --quick             verify the 5x5 instance only
+    --instance 5,7      verify a comma-separated subset of 5, 7, 11, 28
+
+Other options
+-------------
+
+    --json PATH     also write a machine-readable report ('-' for stdout)
+    --no-extract    do not unpack anything from data/ automatically
+    --verbose       show the full output of the sub-checks
+"""
+
+import argparse
+import contextlib
+import importlib
+import io
+import json
+import os
+import re
+import sys
+import tarfile
+import time
+
+
+# -----------------------------------------------------------------------------
+# Exit status. Documented in the module docstring and in the README.
+# -----------------------------------------------------------------------------
+
+EXIT_PASS = 0
+EXIT_FAIL = 1
+EXIT_USAGE = 2            # argparse's own status for a bad command line
+EXIT_INCONCLUSIVE = 3
+EXIT_HARNESS_ERROR = 4
+
+
+_OPTIONAL_MODULES = {}
+
+
+def optional_import(name):
+    """Import `name` once, returning (module, error). Never raises.
+
+    Used for every dependency that a reviewer may legitimately not have --
+    z3-solver, gurobipy, dwave-samplers -- so that a missing one is reported as
+    UNAVAILABLE with a reason instead of aborting the run with a traceback.
+    """
+    if name not in _OPTIONAL_MODULES:
+        try:
+            _OPTIONAL_MODULES[name] = (importlib.import_module(name), None)
+        except Exception as exc:  # ImportError, or anything the module raises
+            _OPTIONAL_MODULES[name] = (None, exc)
+    return _OPTIONAL_MODULES[name]
+
+
+# -----------------------------------------------------------------------------
+# The claims under test. Every number below is quoted from the manuscript.
+# -----------------------------------------------------------------------------
+
+PAPER = {
+    5: {
+        "arch": "31x7x10",
+        "input_dim": 31,
+        "perturbable": 16,           # Table III, "Perturbed Pixels"
+        "epsilon": 8,                # Table III, "Perturbation Bound"
+        "variables": 276,            # Tables III, IV
+        "constraints": 200,          # Tables III, IV, VI, "Total Constraints"
+        "offset": 533,               # Tables III, IV, VI, "Energy Offset" E_off
+        "fem_score": 533,            # Table IV, FEM column
+        "sa_score": 533,             # Table IV, SA column
+        "gurobi_score": 529,         # Table IV, Gurobi column
+        "z3_result": "NR",           # Table V
+        "d_min": 3,                  # Table V
+        "accuracy": 43,              # Table II, "Accuracy"
+        "train_total": 1380,         # Table II, "Total Train Data"
+        "test_total": 703,           # Table II, "Total Test Data"
+    },
+    7: {
+        "arch": "63x7x10", "input_dim": 63,
+        "perturbable": 32, "epsilon": 32,
+        "variables": 413, "constraints": 312, "offset": 2643,
+        "fem_score": 2643, "sa_score": 2643, "gurobi_score": 2635,
+        "z3_result": "NR", "d_min": 1,
+        "accuracy": 41, "train_total": 23995, "test_total": 6212,
+    },
+    11: {
+        "arch": "127x7x10", "input_dim": 127,
+        "perturbable": 64, "epsilon": 32,
+        "variables": 676, "constraints": 536, "offset": 8020,
+        "fem_score": 8020, "sa_score": 8019, "gurobi_score": 8018,
+        "z3_result": "NR", "d_min": 2,
+        "accuracy": 62, "train_total": 55196, "test_total": 9562,
+    },
+    28: {
+        "arch": "1023x7x10", "input_dim": 1023,
+        "perturbable": 256, "epsilon": 128,
+        "variables": 2235, "constraints": 1880, "offset": 1027318,
+        "fem_score": 1027318, "sa_score": 1027316, "gurobi_score": 1027316,
+        "z3_result": "NR", "d_min": 2,
+        "accuracy": 66, "train_total": 59986, "test_total": 10000,
+    },
+}
+
+ALL_SIZES = [5, 7, 11, 28]
+
+FEM_SOLUTIONS_PATH = "FEM_best_configurations.txt"
+FEM_HYPERPARAMETERS_PATH = "FEM_HYPERPARAMETERS.md"
+DATA_ARCHIVE = os.path.join("data", "qubo_and_networks.tar.gz")
+DATASET_ARCHIVE = os.path.join("data", "datasets.tar.gz")
+HARDWARE_ARCHIVE = os.path.join("data", "hardware_results.tar.gz")
+GUROBI_LOG_ARCHIVE = os.path.join("data", "gurobi_logs.tar.gz")
+
+# Table VII's two-class instance, as supplied by the authors.
+HARDWARE_DIR = "hardware"
+HARDWARE_STEM = "113-1273-28-15-zero-3-3-561020-H"
+HARDWARE_QUBO = f"{HARDWARE_DIR}/QUBO/{HARDWARE_STEM}.pickle"
+HARDWARE_FUJITSU = f"{HARDWARE_DIR}/Result/{HARDWARE_STEM}_solution.pickle"
+HARDWARE_FUJITSU_TIME = f"{HARDWARE_DIR}/Time/{HARDWARE_STEM}_time.pickle"
+HARDWARE_DWAVE = f"{HARDWARE_DIR}/Dwave/{HARDWARE_STEM}_solution_dataframe.pickle"
+# The Gurobi vector was not archived with the original delivery. The first author
+# supplied it after submission, as the `state` output of cell 4 of his own
+# Verify_Gurobi.ipynb, which ships next to it in the same archive as provenance.
+# It is stored in the same {str(index): bool} form as the Fujitsu solution above
+# so that the loader below is the same for both rows.
+HARDWARE_GUROBI = f"{HARDWARE_DIR}/Gurobi/{HARDWARE_STEM}_solution.pickle"
+
+# Recomputed properties of that instance, and the reported hardware results.
+HARDWARE = {
+    "variables": 113,
+    "constraints": 65,          # 1 lt + 64 eq
+    "qubo_terms": 1272,
+    "offset": 874674,           # so the target energy is -874,674
+    "fujitsu_energy": -874674,  # Table VII, Digital Annealer
+    "fujitsu_time": 0.366,
+    "fujitsu_constraints": 65,
+    "gurobi_energy": -874674,   # Table VII, Gurobi
+    "gurobi_constraints": 65,
+    # Reported; machine dependent, so not asserted, exactly as the SA row's time
+    # is not. The table's figure was measured on a 64-core Intel Xeon server. The
+    # first author's own notebook records 16.658 s for the same instance and a
+    # third machine takes 25 to 30 s.
+    "gurobi_time": 61.447,
+    "dwave_energy": -874318,    # Table VII, Quantum Annealer
+    "dwave_time": 0.724,
+    "dwave_constraints": 36,
+    # Not a figure the paper claims. Table VII reports 5,000 shots for this row,
+    # and that is correct: the run was made in two batches, of 4,000 and 1,000
+    # shots. Only the 4,000-shot batch was archived, and free D-Wave access has
+    # since ended, so the other 1,000 shots cannot be recovered or re-run. The
+    # value below is the size of the archived batch, which is what the shot
+    # check recomputes from, and the D-Wave energy and constraint figures above
+    # are likewise reproduced from that batch alone.
+    "dwave_shots": 4000,
+    "sa_constraints": 65,       # Table VII, Simulated Annealing
+    "sa_time": 3.559,           # reported; machine dependent, so not asserted
+
+    # Section IV-B's account of WHY the quantum annealer does badly on this
+    # instance: it is dense and wide in coefficient range at the same time, and
+    # the two properties come from different parts of the construction. Every
+    # figure below is quoted from that paragraph and recomputed in
+    # check_hardware() from the pickled QUBO and constraint dictionaries.
+    "possible_couplings": 6328,     # C(113, 2)
+    "couplings": 1164,
+    "median_degree": 24,
+    "pegasus_couplers": 15,         # Boothby et al., a Pegasus qubit's degree
+    "min_coefficient": 1,
+    "max_coefficient": 332801,
+    "max_coupling": 262144,         # 512^2
+    "sign_layer_residuals": 3,      # the wide sign-layer sums
+    "sign_layer_support": 25,
+    "sign_layer_couplings": 900,    # 3 * C(25, 2)
+    "other_residuals": 62,          # 65 - 3
+    "other_max_coupling": 4,        # 2 * 2 * 2, from weights of at most 2
+    "budget_support": 15,
+    "budget_max_coupling": 2,       # 2 * 1 * 1, from unit weights
+    # "no returned sample kept all of its chains intact"
+    "dwave_intact_chain_samples": 0,
+}
+
+# Table VII's SA row is the one default check that runs a stochastic solver
+# rather than re-evaluating an archived vector, because no SA vector was
+# archived. It is affordable only because this instance is small: 113 variables
+# and about 2.3 s per seed at the num_reads the authors' own SA_Verify.ipynb
+# uses. Table IV's SA column stays behind --with-sa, where one instance takes
+# minutes to hours. Seeds are tried in order and the loop stops at the first one
+# that reaches the target, so the usual cost is a single seed; the spares are
+# there so that an unlucky draw is not reported as a shortfall.
+HARDWARE_SA_READS = 1000
+HARDWARE_SA_SEEDS = (0, 1, 2)
+
+GUROBI_LOG_DIR = "gurobi_logs"
+GUROBI_LOG_PATTERN = GUROBI_LOG_DIR + "/GurobiLog_{size}x{size}.txt"
+
+# Exhaustive enumeration refuses to start a distance level larger than this.
+MAX_COMBINATIONS_PER_LEVEL = 5_000_000
+
+Z3_TIMEOUT_SECONDS = 600.0
+
+# The opt-in solver checks would otherwise run for hours to a day: Gurobi's
+# early-stop rule allows 100,000 non-improving nodes on the two smaller instances
+# and 10,000,000 on the two larger ones, which is what the reported runs took 47
+# minutes to 18.7 hours to exhaust. Unless --timeout says otherwise, each opt-in
+# check gets this bound, and exceeding it is TIMEOUT, never FAIL.
+OPT_IN_DEFAULT_TIMEOUT_SECONDS = 900.0
+
+# SA.py's settings, so that --with-sa runs the same configuration. They are
+# expensive -- 2048 x 5000 on the 276-variable 5x5 instance already takes
+# minutes -- so they can be dialled down for a quick smoke test through the
+# environment. Anything other than the defaults is not the paper's SA setup and
+# is reported as such.
+SA_NUM_READS = int(os.environ.get("VERIFY_SA_READS", 2048))
+SA_NUM_SWEEPS = int(os.environ.get("VERIFY_SA_SWEEPS", 5000))
+SA_BETA_SCHEDULE = "geometric"
+SA_DEFAULT_READS = 2048
+SA_DEFAULT_SWEEPS = 5000
+
+# The common size-limited Gurobi license.
+GUROBI_LIMITED_VARIABLES = 2000
+
+
+def qubo_dir(size):
+    return f"QUBO/{size}x{size}/{PAPER[size]['arch']}"
+
+
+def info_path(size):
+    return f"{qubo_dir(size)}/Info.txt"
+
+
+def qubo_matrix_path(size):
+    return f"{qubo_dir(size)}/QUBO_W.txt"
+
+
+def variables_path(size):
+    return f"{qubo_dir(size)}/Variables.json"
+
+
+def checkpoint_path(size):
+    return (f"TrainedNN/{size}x{size}/{PAPER[size]['arch']}/"
+            f"{PAPER[size]['input_dim']}.pth")
+
+
+def network_info_path(size):
+    """The Info.txt TrainingNN.py wrote next to the checkpoint.
+
+    Not the same file as info_path() above, which QUBOCreator.py wrote next to
+    the QUBO. This one records the architecture and the test-set accuracy line
+    that Table II reports.
+    """
+    return f"TrainedNN/{size}x{size}/{PAPER[size]['arch']}/Info.txt"
+
+
+def dataset_path(size, split="Train"):
+    return f"Dataset/{size}x{size}/{split}.txt"
+
+
+def instance_available(size):
+    return all(os.path.exists(path) for path in
+               (info_path(size), qubo_matrix_path(size),
+                variables_path(size), checkpoint_path(size)))
+
+
+# -----------------------------------------------------------------------------
+# Report plumbing
+# -----------------------------------------------------------------------------
+
+PASS = "PASS"
+FAIL = "FAIL"
+SKIPPED = "SKIPPED"
+UNAVAILABLE = "UNAVAILABLE"
+TIMEOUT = "TIMEOUT"
+INCONCLUSIVE = "INCONCLUSIVE"
+NOT_VERIFIABLE = "NOT VERIFIABLE"
+
+NOT_RUN_STATUSES = (SKIPPED, UNAVAILABLE, TIMEOUT, INCONCLUSIVE, NOT_VERIFIABLE)
+
+# -----------------------------------------------------------------------------
+# The check groups, and how many report entries each one owes.
+#
+# These quotas are what makes a dropped check visible. Every group below
+# promises a fixed number of entries per instance, and a check that cannot run
+# must still leave an entry saying so. expected_check_counts() turns the
+# selected instances, flags and available resources into the exact number of
+# entries the run must produce, and main() compares that with what was actually
+# recorded. A mismatch is a harness error (exit 3), not a pass.
+#
+# A "resource-level" absence -- a missing archive, a missing instance directory,
+# a dependency that is not installed -- collapses a group to ONE entry per
+# instance, because a single reason covers all of its checks and repeating it
+# per check would be noise. Everything else emits the full quota.
+# -----------------------------------------------------------------------------
+
+GROUP_TABLE2 = "Table II          BNN accuracy and data set sizes"
+GROUP_STRUCTURE = "Tables III/IV/VI  QUBO structure"
+GROUP_FEM = "Table IV          FEM energies + reverse check"
+GROUP_Z3 = "Table V           Z3 SMT baseline"
+GROUP_DMIN = "Table V           minimum adversarial distance"
+GROUP_GUROBI_LOGS = "Table IV          Gurobi column (logs)"
+GROUP_GUROBI = "Table IV          Gurobi column"
+GROUP_SA = "Table IV          SA column"
+GROUP_FEM_REPLAY = "Table IV          FEM solver replay"
+GROUP_HARDWARE = "Table VII         hardware results"
+GROUP_LINEAR = "Section IV-B      linear constraint form"
+
+# Groups that run without any opt-in flag. If one of these produces no PASS and
+# no FAIL at all, the run verified nothing it was supposed to verify and the
+# verdict is INCONCLUSIVE rather than PASS.
+DEFAULT_GROUPS = (GROUP_TABLE2, GROUP_STRUCTURE, GROUP_FEM, GROUP_Z3,
+                  GROUP_DMIN, GROUP_GUROBI_LOGS, GROUP_HARDWARE, GROUP_LINEAR)
+
+# Entries owed per instance when the group can actually be attempted.
+QUOTA_TABLE2 = 3
+QUOTA_STRUCTURE = 9
+QUOTA_FEM = 3
+QUOTA_Z3 = 2
+QUOTA_DMIN = 2
+QUOTA_GUROBI_LOGS = 6
+QUOTA_GUROBI = 1
+QUOTA_SA = 2          # the solver run, and the reverse check on the BNN
+QUOTA_FEM_REPLAY = 1
+# Table VII is a single instance, not one per size: 5 structural checks,
+# 9 coefficient/coupling statistics from the Section IV-B discussion of that
+# same instance, 3 Gurobi, 4 Fujitsu, 6 D-Wave and 3 SA. The Gurobi row owes one
+# fewer than the Fujitsu row because its runtime is machine dependent and is not
+# asserted.
+QUOTA_HARDWARE = 30
+
+# Section IV-B's linear-constraint-form paragraph, on that same instance:
+# the feasible count and d_min from enumeration, the two archived vectors'
+# perturbation sizes, the Z3 witness and its proven minimum, and Gurobi's
+# minimum. Runtimes are reported next to these but never asserted.
+QUOTA_LINEAR = 7
+
+
+def expected_check_counts(sizes, missing, resources):
+    """How many report entries every group owes, given this configuration.
+
+    `resources` is the dictionary main() builds once the archives have been
+    unpacked and the optional dependencies probed. Nothing here inspects the
+    report, so this is an independent statement of what the run should produce,
+    checked against what it did produce.
+    """
+    present = [size for size in sizes if size not in missing]
+    n_present = len(present)
+    n_absent = len(sizes) - n_present
+    expected = {}
+
+    expected[GROUP_TABLE2] = QUOTA_TABLE2 * n_present + n_absent
+
+    expected[GROUP_STRUCTURE] = QUOTA_STRUCTURE * n_present + n_absent
+
+    expected[GROUP_FEM] = (QUOTA_FEM * n_present + n_absent
+                           if resources["fem_solutions"] else len(sizes))
+
+    # Every Table V check needs z3-solver, so a missing one collapses the group.
+    expected[GROUP_Z3] = (QUOTA_Z3 * n_present + n_absent
+                          if resources["z3"] else len(sizes))
+
+    # d_min keeps its full quota without z3-solver: the exhaustive enumeration
+    # half needs only NumPy, and just the Z3 scan entry becomes UNAVAILABLE.
+    expected[GROUP_DMIN] = QUOTA_DMIN * n_present + n_absent
+
+    expected[GROUP_GUROBI_LOGS] = sum(
+        QUOTA_GUROBI_LOGS if resources["gurobi_logs"].get(size) else 1
+        for size in sizes)
+
+    expected[GROUP_GUROBI] = QUOTA_GUROBI * len(sizes)
+
+    expected[GROUP_SA] = (QUOTA_SA * len(sizes)
+                          if resources["with_sa"] and resources["dwave"]
+                          else len(sizes))
+
+    expected[GROUP_FEM_REPLAY] = QUOTA_FEM_REPLAY * len(sizes)
+
+    expected[GROUP_HARDWARE] = QUOTA_HARDWARE if resources["hardware"] else 1
+
+    # The linear form keeps its full quota whatever is installed: only two of
+    # its seven entries need z3-solver and only one needs Gurobi, and each of
+    # those leaves an UNAVAILABLE or SKIPPED entry of its own rather than
+    # collapsing the group.
+    expected[GROUP_LINEAR] = QUOTA_LINEAR if resources["hardware"] else 1
+
+    return expected
+
+_STATUS_WORD = {
+    PASS: "passed",
+    FAIL: "FAILED",
+    SKIPPED: "not run",
+    UNAVAILABLE: "unavailable",
+    TIMEOUT: "timed out",
+    INCONCLUSIVE: "inconclusive",
+    NOT_VERIFIABLE: "not verifiable",
+}
+
+
+class Report:
+    """Collects outcomes and prints them grouped by paper table."""
+
+    def __init__(self, verbose=False):
+        self.verbose = verbose
+        self.entries = []
+        self.group = None
+
+    # -- output helpers --------------------------------------------------
+
+    def banner(self, text):
+        print("=" * 79)
+        print(f" {text}")
+        print("=" * 79)
+
+    def section(self, title, group_key):
+        self.group = group_key
+        print()
+        print("-" * 79)
+        print(f" {title}")
+        print("-" * 79)
+
+    def note(self, text):
+        for line in text.strip("\n").split("\n"):
+            print(f" {line}" if line else "")
+
+    def instance_header(self, size, detail=""):
+        head = f" {size}x{size} ({PAPER[size]['arch']})"
+        print(f"\n{head}{('   ' + detail) if detail else ''}")
+
+    # -- result recording ------------------------------------------------
+
+    def _record(self, status, name, size, claimed=None, recomputed=None,
+                detail="", hint=None):
+        self.entries.append({
+            "group": self.group, "instance": size, "check": name,
+            "status": status, "claimed": _jsonable(claimed),
+            "recomputed": _jsonable(recomputed), "detail": detail,
+            "hint": hint,
+        })
+        return status == PASS
+
+    def check(self, name, claimed, recomputed, ok=None, detail="", size=None):
+        """A numerical claim: paper value vs recomputed value."""
+        if ok is None:
+            ok = claimed == recomputed
+        status = PASS if ok else FAIL
+        claim = "-" if claimed is None else _fmt(claimed)
+        got = "-" if recomputed is None else _fmt(recomputed)
+        line = (f"   [{status:^14}] {name:<46} "
+                f"paper {claim:>12}   recomputed {got:>12}")
+        if detail:
+            line += f"   {detail}"
+        print(line)
+        return self._record(status, name, size, claimed, recomputed, detail)
+
+    def assertion(self, name, ok, detail="", size=None):
+        """A consistency assertion with no single 'claimed number'."""
+        status = PASS if ok else FAIL
+        line = f"   [{status:^14}] {name:<46}"
+        if detail:
+            line += f" {detail}"
+        print(line)
+        return self._record(status, name, size, detail=detail)
+
+    def outcome(self, status, name, reason, hint=None, size=None,
+                claimed=None, recomputed=None):
+        """A non-PASS/FAIL outcome: SKIPPED, UNAVAILABLE, TIMEOUT, ..."""
+        head = f"   [{status:^14}] {name}"
+        if claimed is not None:
+            head += f"   (paper {_fmt(claimed)}"
+            head += (f", reached {_fmt(recomputed)})" if recomputed is not None
+                     else ")")
+        print(head)
+        print(f"{'':<20}why : {reason}")
+        if hint:
+            print(f"{'':<20}how : {hint}")
+        return self._record(status, name, size, claimed, recomputed,
+                            reason, hint)
+
+    def error(self, name, message, size=None):
+        print(f"   [{FAIL:^14}] {name}")
+        print(f"{'':<20}{message}")
+        return self._record(FAIL, name, size, detail=message)
+
+    def solver_run(self, name, size, paper_energy, target_energy, energies,
+                   runtime, runs_label="seeds", hint=None):
+        """Report one heuristic / early-terminated solver run.
+
+        Two different gaps are reported, and they mean different things:
+
+          * gap vs the paper's value is the reproduction question. Zero means
+            this run reproduced what the paper reports for this solver.
+          * gap vs the target energy is the feasibility question. Zero means
+            every encoded constraint is satisfied.
+
+        They are NOT the same: Table IV's SA column is 8,019 for 11x11 against
+        a target of 8,020, and 1,027,316 for 28x28 against 1,027,318, so the
+        paper itself does not claim full feasibility everywhere.
+
+        The verdict is taken from the gap vs the paper's value only, and a
+        shortfall is INCONCLUSIVE, never FAIL: a heuristic search that falls
+        short is not evidence that the reported number is wrong.
+
+        There is one lower bound, and it is checked rather than assumed. The
+        objective H_0 is identically zero on every instance here, so the QUBO is
+        a sum of squared constraint residuals and the target energy -E_off is a
+        proven lower bound: no assignment can score below it. A run that comes
+        back BELOW the target is therefore not a better solution, it is a broken
+        instance -- a corrupted QUBO_W.txt, a mis-parsed Info.txt or the wrong
+        matrix -- and it is reported as FAIL. Without this the report would
+        happily print "4,979 better than reported" as a PASS.
+        """
+        energies = sorted(float(value) for value in energies)
+        best = energies[0]
+        matched = sum(1 for value in energies if value <= paper_energy)
+        median = energies[len(energies) // 2]
+
+        gap_paper = best - paper_energy          # <= 0 means at least as good
+        gap_target = best - target_energy        # >= 0 for a valid instance
+        scale = abs(target_energy) or 1.0
+
+        # Solver energies are integer-valued here, but FEM accumulates in
+        # float32, so allow a little slack before calling the target breached.
+        slack = max(1e-6, 1e-9 * scale)
+        below_target = gap_target < -slack
+
+        if below_target:
+            status = FAIL
+        elif gap_paper <= 0:
+            status = PASS
+        else:
+            status = INCONCLUSIVE
+        print(f"   [{status:^14}] {name:<46} "
+              f"paper {_fmt(paper_energy):>12}   recomputed {_fmt(best):>12}")
+        print(f"{'':<20}{runs_label:<7}: {len(energies)} run, "
+              f"{matched}/{len(energies)} reached the paper's value; "
+              f"energies min {best:,.0f} / median {median:,.0f} / "
+              f"max {energies[-1]:,.0f}")
+        if gap_paper <= 0:
+            paper_text = ("0 -- reproduced exactly" if gap_paper == 0 else
+                          f"{-gap_paper:,.0f} better than reported")
+        else:
+            paper_text = f"{gap_paper:,.0f} short ({gap_paper / scale:.3%})"
+        if below_target:
+            target_text = (f"{gap_target:,.0f} BELOW the target "
+                           f"{target_energy:,.0f}, which is impossible")
+        else:
+            target_text = (f"{gap_target:,.0f} ({gap_target / scale:.3%}) "
+                           f"-> at most {gap_target:,.0f} encoded "
+                           f"constraint(s) violated")
+        print(f"{'':<20}gaps   : vs paper {paper_text}; vs target "
+              f"{target_text}")
+        print(f"{'':<20}time   : {runtime:.1f} s")
+        if below_target:
+            print(f"{'':<20}ERROR  : the objective H_0 is identically zero, so "
+                  f"the target energy is a proven")
+            print(f"{'':<20}         lower bound and nothing can score below "
+                  f"it. This instance is not")
+            print(f"{'':<20}         the one the paper describes: check "
+                  f"QUBO_W.txt and Info.txt.")
+        if status == INCONCLUSIVE and hint:
+            print(f"{'':<20}how    : {hint}")
+
+        detail = (f"best {best:,.0f}; gap vs paper {gap_paper:,.0f}; "
+                  f"gap vs target {gap_target:,.0f}; "
+                  f"{matched}/{len(energies)} runs matched; {runtime:.1f} s")
+        if below_target:
+            detail += ("; IMPOSSIBLE: below the proven lower bound "
+                       f"{target_energy:,.0f}")
+        self.entries.append({
+            "group": self.group, "instance": size, "check": name,
+            "status": status, "claimed": paper_energy, "recomputed": best,
+            "detail": detail, "hint": hint,
+            "gap_vs_paper": gap_paper, "gap_vs_target": gap_target,
+            "energies": energies, "runtime_seconds": runtime,
+        })
+        return status == PASS
+
+    # -- summary ---------------------------------------------------------
+
+    def tally(self):
+        counts = {}
+        for entry in self.entries:
+            counts[entry["status"]] = counts.get(entry["status"], 0) + 1
+        return counts
+
+    def group_counts(self):
+        """Entries recorded per group, for the expected-count self-check."""
+        counts = {}
+        for entry in self.entries:
+            counts[entry["group"]] = counts.get(entry["group"], 0) + 1
+        return counts
+
+    def hollow_default_groups(self):
+        """Default groups that produced no PASS and no FAIL.
+
+        Such a group ran none of the checks it exists to run -- its archive, its
+        instance data or its dependency was absent -- so the report as a whole
+        cannot claim to have verified that table.
+        """
+        decided = set()
+        seen = set()
+        for entry in self.entries:
+            seen.add(entry["group"])
+            if entry["status"] in (PASS, FAIL):
+                decided.add(entry["group"])
+        return [group for group in DEFAULT_GROUPS
+                if group in seen and group not in decided]
+
+    def verdict(self, expected=None):
+        """(result word, exit code, list of reasons). See the module docstring."""
+        counts = self.tally()
+        reasons = []
+
+        shortfall = []
+        if expected is not None:
+            actual = self.group_counts()
+            for group, owed in expected.items():
+                got = actual.get(group, 0)
+                if got != owed:
+                    shortfall.append((group, owed, got))
+            for group in sorted(set(actual) - set(expected)):
+                shortfall.append((group, 0, actual[group]))
+
+        if shortfall:
+            for group, owed, got in shortfall:
+                reasons.append(f"{_squeeze(group)}: expected {owed} "
+                               f"check(s), recorded {got}")
+            return "HARNESS ERROR", EXIT_HARNESS_ERROR, reasons
+
+        if counts.get(FAIL):
+            return FAIL, EXIT_FAIL, reasons
+
+        if not counts.get(PASS):
+            reasons.append("no check ran at all, so nothing was verified")
+            return INCONCLUSIVE, EXIT_INCONCLUSIVE, reasons
+
+        hollow = self.hollow_default_groups()
+        if hollow:
+            for group in hollow:
+                reasons.append(f"{_squeeze(group)}: no check in this "
+                               f"default group could run, so this table "
+                               f"is unverified")
+            return INCONCLUSIVE, EXIT_INCONCLUSIVE, reasons
+
+        return PASS, EXIT_PASS, reasons
+
+    def summary(self, elapsed, expected=None):
+        print()
+        self.banner("SUMMARY")
+        order = []
+        for entry in self.entries:
+            if entry["group"] not in order:
+                order.append(entry["group"])
+        for group in order:
+            rows = [e for e in self.entries if e["group"] == group]
+            counts = {}
+            for row in rows:
+                counts[row["status"]] = counts.get(row["status"], 0) + 1
+            bits = []
+            for status in (PASS, FAIL, SKIPPED, UNAVAILABLE, TIMEOUT,
+                           INCONCLUSIVE, NOT_VERIFIABLE):
+                if counts.get(status):
+                    bits.append(f"{counts[status]} {_STATUS_WORD[status]}")
+            print(f" {group:<50} {', '.join(bits)}")
+
+        counts = self.tally()
+        hints = sorted({e["hint"] for e in self.entries
+                        if e["status"] == SKIPPED and e.get("hint")
+                        and e["hint"].startswith("--")})
+        print()
+        line = (f" {counts.get(PASS, 0)} passed, "
+                f"{counts.get(FAIL, 0)} failed")
+        if counts.get(SKIPPED):
+            line += f", {counts[SKIPPED]} not run"
+            if hints:
+                line += f" ({', '.join(hints)})"
+        if counts.get(UNAVAILABLE):
+            line += f", {counts[UNAVAILABLE]} unavailable"
+        if counts.get(TIMEOUT):
+            line += f", {counts[TIMEOUT]} timed out"
+        if counts.get(INCONCLUSIVE):
+            line += f", {counts[INCONCLUSIVE]} inconclusive"
+        if counts.get(NOT_VERIFIABLE):
+            line += (f", {counts[NOT_VERIFIABLE]} not verifiable "
+                     f"(hardware access required)")
+        print(line)
+        print(f" elapsed: {elapsed:.1f} s")
+
+        result, status_code, reasons = self.verdict(expected)
+
+        # The caveats come FIRST and the verdict last, so that the last line of
+        # the report is never a bare "PASS" sitting on top of the reasons it
+        # should be read with.
+        not_run = sum(counts.get(status, 0) for status in NOT_RUN_STATUSES)
+        if not_run or reasons:
+            print()
+        if not_run:
+            print(f" {not_run} check(s) were NOT run and are therefore NOT "
+                  f"verified; see the reasons")
+            print(" above. Do not read them as confirmed.")
+        for reason in reasons:
+            print(f" ! {reason}")
+        print()
+
+        if result == "HARNESS ERROR":
+            print(" RESULT: HARNESS ERROR -- this run did not record the number "
+                  "of checks its own")
+            print("         configuration calls for, so a check was dropped "
+                  "without leaving a")
+            print("         record and the report cannot be trusted. This is a "
+                  "bug in")
+            print(f"         verify_paper.py, not a result about the paper. "
+                  f"(exit {status_code})")
+        elif result == FAIL:
+            print(f" RESULT: FAIL -- at least one reported number did not "
+                  f"reproduce. (exit {status_code})")
+        elif result == INCONCLUSIVE:
+            print(" RESULT: INCONCLUSIVE -- nothing failed, but too little ran "
+                  "to conclude")
+            print("         anything. This is NOT a pass. Unpack the data "
+                  "archives, install the")
+            print(f"         missing dependencies and run again. "
+                  f"(exit {status_code})")
+        else:
+            print(f" RESULT: PASS -- every check that was run reproduces the "
+                  f"paper. (exit {status_code})")
+        print("=" * 79)
+        return result, status_code
+
+
+def _squeeze(text):
+    """Collapse a padded group key into a readable phrase."""
+    return " ".join(text.split())
+
+
+def _fmt(value):
+    if isinstance(value, float) and value == int(value):
+        value = int(value)
+    if isinstance(value, int):
+        return f"{value:,}"
+    return str(value)
+
+
+def _jsonable(value):
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            pass
+    return value
+
+
+def report_all(report, status, names, reason, hint=None, size=None,
+               claimed=None):
+    """Record one `status` entry per name, so no check disappears silently.
+
+    Called wherever a group cannot get as far as its individual checks. The
+    quotas above are only meaningful because every early exit comes through
+    here rather than through a bare `return`.
+    """
+    for name in names:
+        report.outcome(status, name, reason, hint, size=size, claimed=claimed)
+
+
+@contextlib.contextmanager
+def captured(verbose):
+    """Silence chatty sub-checks unless --verbose was given."""
+    if verbose:
+        yield None
+        return
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        yield buffer
+
+
+class Deadline:
+    """A soft per-check wall-clock bound.
+
+    It is enforced where a solver supports a native time limit (Gurobi, Z3) and
+    otherwise between sub-steps. It cannot interrupt a single long call inside a
+    native extension, so it is a bound on when a check gives up, not a hard kill.
+    """
+
+    def __init__(self, seconds):
+        # `None` means no limit. --timeout 0 is normalised to None by main(),
+        # because "0 seconds" reads as "no limit", not "fail immediately".
+        self.seconds = seconds
+        self.started = time.perf_counter()
+
+    def reset(self):
+        self.started = time.perf_counter()
+        return self
+
+    def remaining(self):
+        if self.seconds is None:
+            return None
+        return self.seconds - (time.perf_counter() - self.started)
+
+    def expired(self):
+        remaining = self.remaining()
+        return remaining is not None and remaining <= 0
+
+    def solver_budget(self, cap):
+        """A positive per-solver time limit, or None if the budget is spent.
+
+        `cap` is the solver's own default bound. Note the `is not None` tests:
+        a plain truthiness test here treated a remaining budget of 0.0 as "no
+        limit" and, worse, passed a NEGATIVE budget straight through to the
+        solver, which rejected it and turned an exhausted timeout into a FAIL.
+        Exceeding a timeout is TIMEOUT and never FAIL, so a non-positive budget
+        must be reported as such rather than clamped to something the solver
+        will run with.
+        """
+        remaining = self.remaining()
+        if remaining is None:
+            return cap
+        if remaining <= 0:
+            return None
+        return min(cap, remaining)
+
+
+# -----------------------------------------------------------------------------
+# Instance description, read from the shipped Info.txt
+# -----------------------------------------------------------------------------
+
+def read_info(size):
+    """Parse the fields of Info.txt that describe the verification instance."""
+    with open(info_path(size), encoding="utf-8") as handle:
+        text = handle.read()
+
+    def bracketed(key):
+        anchor = text.index(key)
+        start = text.index("[", anchor)
+        depth = 0
+        for position in range(start, len(text)):
+            if text[position] == "[":
+                depth += 1
+            elif text[position] == "]":
+                depth -= 1
+                if depth == 0:
+                    return text[start + 1:position]
+        raise ValueError(f"{info_path(size)}: unterminated '{key}'")
+
+    return {
+        "minimum_energy": int(float(
+            re.search(r"Minimum Energy\s*:\s*(-?[\d.]+)", text).group(1))),
+        "total_variables": int(
+            re.search(r"Total Variables\s*:\s*(\d+)", text).group(1)),
+        "epsilon": int(re.search(r"Epsilon\s*:\s*(\d+)", text).group(1)),
+        "pixels": [int(value) for value in
+                   bracketed("Pixels perturbed").replace(",", " ").split()],
+        "clean": [int(float(value)) for value in
+                  bracketed("Input to perturb").replace(",", " ").split()],
+        "label": int(float(
+            re.search(r"Label to perturb\s*:\s*([\d.]+)", text).group(1))),
+    }
+
+
+_QUBO_CACHE = {}
+
+
+def load_qubo_matrix(size):
+    """Load QUBO_W.txt (upper triangular including the diagonal)."""
+    if size not in _QUBO_CACHE:
+        import numpy as np
+        _QUBO_CACHE[size] = np.loadtxt(qubo_matrix_path(size))
+    return _QUBO_CACHE[size]
+
+
+def qubo_dict(size):
+    """The shipped QUBO as the {(i, j): w} dictionary the solvers expect."""
+    import numpy as np
+    matrix = load_qubo_matrix(size)
+    rows, columns = np.nonzero(matrix)
+    return {(int(i), int(j)): float(matrix[i, j])
+            for i, j in zip(rows, columns)}
+
+
+# -----------------------------------------------------------------------------
+# The authors' network, exactly as QUBOCreator.py defines it
+# -----------------------------------------------------------------------------
+
+def build_net(input_dim):
+    """Rebuild QUBOCreator.py's QUBONet.
+
+    QUBOCreator.py performs the whole generation pipeline at import time, so it
+    cannot be imported for its class definitions alone. The definition is
+    therefore repeated here; it must stay identical to the one in
+    QUBOCreator.py, and the entry-by-entry comparison against the shipped
+    QUBO_W.txt below would fail immediately if it ever drifted.
+    """
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+    from torch.autograd import Function
+
+    class Binarize(Function):
+        clip_value = 1
+
+        @staticmethod
+        def forward(ctx, inp):
+            ctx.save_for_backward(inp)
+            out = inp.new(inp.size())
+            out[inp >= 0] = 1
+            out[inp < 0] = -1
+            return out
+
+        @staticmethod
+        def backward(ctx, grad_output):
+            inp = ctx.saved_tensors[0]
+            clipped = inp.abs() <= Binarize.clip_value
+            out = torch.zeros(inp.size()).to(grad_output.device)
+            out[clipped] = 1
+            out[~clipped] = 0
+            return out * grad_output
+
+    binarize = Binarize.apply
+
+    class BinaryLinear(nn.Linear):
+        def __init__(self, in_features, out_features, bias=False):
+            super().__init__(in_features, out_features, bias=bias)
+
+        def forward(self, inp):
+            return binarize(F.linear(inp, binarize(self.weight))).to(inp.device)
+
+    class LastLayer(nn.Linear):
+        def __init__(self, in_features, out_features, bias=False):
+            super().__init__(in_features, out_features, bias=bias)
+
+        def forward(self, inp):
+            return F.linear(inp, binarize(self.weight)).to(inp.device)
+
+    class QUBONet(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fc1 = BinaryLinear(input_dim, 7)
+            self.fc4 = LastLayer(7, 10)
+
+        def forward(self, x):
+            return torch.argmax(self.fc4(self.fc1(x)))
+
+    net = QUBONet()
+    net.load_state_dict(torch.load(_checkpoint_for_dim(input_dim),
+                                   weights_only=True, map_location="cpu"))
+    net.eval()
+    return net
+
+
+def _checkpoint_for_dim(input_dim):
+    for size, claim in PAPER.items():
+        if claim["input_dim"] == input_dim:
+            return checkpoint_path(size)
+    raise ValueError(f"no instance with input dimension {input_dim}")
+
+
+def rebuild_qubo(size, info, tie_aware=False):
+    """Rebuild the instance with the authors' own builder.
+
+    `tie_aware` selects the misclassification encoding and defaults to False,
+    which is the strict variant every shipped QUBO and every reported number
+    uses. Nothing in this script passes anything else; the parameter exists so
+    that test_tie_aware_qubo.py can build both and compare them.
+
+    The clean input, the label and the perturbable pixel list are taken from the
+    Info.txt that QUBOCreator.py wrote alongside the QUBO. That file fixes the
+    variable order of the shipped matrix, so this rebuild can be compared with
+    QUBO_W.txt entry by entry. Whether the same instance is recovered from the
+    training set is checked separately in cross_check_dataset().
+    """
+    import torch
+    from get_args import args
+    from utils import to_spin
+    from bnn_as_qubo import setup_optim_model
+
+    args.pixels_to_perturb_len = PAPER[size]["perturbable"]
+    args.LAMBDA = {
+        "sum_taus": 0.1,
+        "output": 1,
+        "hard_constraints": 1,
+        "perturbation_bound_constraint": 1,
+        "epsilon": 1,
+    }
+    args.objective = "zero"
+    args.epsilon = info["epsilon"]
+    args.include_perturbation_bound_constraint = True
+    args.selected_targets = tuple(range(10))
+    # Pin the misclassification encoding rather than leaving it to the
+    # environment, so that an exported BNN_ARGMAX_TIE_AWARE=1 cannot silently
+    # change what is being checked. The default is the strict variant.
+    args.argmax_tie_aware = bool(tie_aware)
+    args.pixels_to_perturb = list(info["pixels"])
+
+    net = build_net(PAPER[size]["input_dim"])
+    spin = to_spin(torch.tensor(info["clean"], dtype=torch.float32))
+    return setup_optim_model(spin, info["label"], net, args)
+
+
+def cross_check_dataset(size, info):
+    """Re-derive the instance from the training set, as QUBOCreator.py does.
+
+    Returns (pixels_match_as_set, pixels_match_in_order, input_matches,
+    label_matches), or None if Dataset/ is not extracted.
+    """
+    if not os.path.exists(dataset_path(size)):
+        return None
+
+    import numpy as np
+    import torch
+    from utils import to_spin
+
+    net = build_net(PAPER[size]["input_dim"])
+    train = torch.load(dataset_path(size), weights_only=False)
+    flat = train.dataset.tensors[0][:, 0:size * size]
+    pixels = [int(value) for value in flat.mean(axis=0).abs().topk(
+        min(PAPER[size]["perturbable"], flat.shape[1]),
+        largest=False).indices.numpy()]
+
+    with torch.no_grad():
+        for index in range(len(train)):
+            item = train.dataset[index]
+            spin = to_spin(item[0])
+            if net(torch.Tensor(np.array([np.array(spin)]))) == item[1]:
+                break
+
+    return (
+        sorted(pixels) == sorted(info["pixels"]),
+        pixels == list(info["pixels"]),
+        [int(value) for value in item[0].tolist()] == list(info["clean"]),
+        int(item[1]) == info["label"],
+    )
+
+
+def dense_from_qubo(qubo, order):
+    """Densify a qubovert QUBO dictionary the way QUBOCreator.py writes it."""
+    import numpy as np
+    matrix = np.zeros((len(order), len(order)))
+    for key, value in qubo.items():
+        if len(key) == 1:
+            matrix[key[0], key[0]] = value
+        elif len(key) == 2:
+            matrix[key[0], key[1]] = value
+    return matrix
+
+
+# -----------------------------------------------------------------------------
+# Group 0 -- Table II: the trained networks and the data sets behind them
+# -----------------------------------------------------------------------------
+
+_ACCURACY = re.compile(
+    r"Accuracy:\s*(\d+)\s*/\s*(\d+)\s*\((\d+)%\)")
+
+
+def read_network_info(size):
+    """Parse TrainingNN.py's Info.txt: (correct, tested, printed percentage)."""
+    with open(network_info_path(size), encoding="utf-8") as handle:
+        text = handle.read()
+    match = _ACCURACY.search(text)
+    if not match:
+        raise ValueError(f"{network_info_path(size)}: no accuracy line")
+    return int(match.group(1)), int(match.group(2)), int(match.group(3))
+
+
+def dataset_length(size, split):
+    """How many examples the shipped DataLoader holds, or None if absent."""
+    path = dataset_path(size, split)
+    if not os.path.exists(path):
+        return None
+    import torch
+    return len(torch.load(path, weights_only=False).dataset)
+
+
+TABLE2_CHECK_NAMES = (
+    "Accuracy (Table II)",
+    "Total Test Data (Table II)",
+    "Total Train Data (Table II)",
+)
+assert len(TABLE2_CHECK_NAMES) == QUOTA_TABLE2
+
+
+def check_table2(report, sizes, missing):
+    report.section("Table II -- the trained networks: accuracy and data set "
+                   "sizes", GROUP_TABLE2)
+    report.note("""
+Table II reports, per architecture, the training and test set sizes and the
+test accuracy. Two of the three are recorded verbatim in the Info.txt that
+TrainingNN.py wrote next to each checkpoint, in the line
+
+    Test set: Avg. loss: ..., Accuracy: <correct>/<tested> (<percent>%)
+
+so the accuracy column and the Total Test Data column are read straight out of
+the shipped artifact. The percentage is not taken on trust either: it is
+recomputed from the two counts with the rounding PyTorch's own test loop uses,
+so a checkpoint whose Info.txt had been edited would show up here.
+
+Total Train Data is not recorded anywhere in TrainedNN/, so it is counted from
+the shipped DataLoader in data/datasets.tar.gz. Where that archive has not been
+unpacked the row says so rather than passing quietly.
+""")
+
+    for size in sizes:
+        claim = PAPER[size]
+        report.instance_header(size)
+        if size in missing or not os.path.exists(network_info_path(size)):
+            report.outcome(UNAVAILABLE, "Table II row",
+                           f"{network_info_path(size)} is not present",
+                           f"tar xzf {DATA_ARCHIVE}", size=size)
+            continue
+
+        correct, tested, printed = read_network_info(size)
+        # TrainingNN.py prints 100. * correct / tested with a '.0f' format.
+        recomputed = int(round(100.0 * correct / tested))
+        report.check(TABLE2_CHECK_NAMES[0], claim["accuracy"], printed,
+                     detail=f"Info.txt says {correct:,}/{tested:,}, which is "
+                            f"{100.0 * correct / tested:.2f}% and rounds to "
+                            f"{recomputed}%",
+                     ok=(claim["accuracy"] == printed == recomputed),
+                     size=size)
+        test_total = dataset_length(size, "Test")
+        detail = "the denominator of the Info.txt accuracy line"
+        if test_total is not None:
+            detail += (f"; Dataset/{size}x{size}/Test.txt holds "
+                       f"{test_total:,}")
+        report.check(TABLE2_CHECK_NAMES[1], claim["test_total"], tested,
+                     ok=(claim["test_total"] == tested
+                         and test_total in (None, tested)),
+                     detail=detail, size=size)
+
+        train_total = dataset_length(size, "Train")
+        if train_total is None:
+            report.outcome(
+                SKIPPED, TABLE2_CHECK_NAMES[2],
+                f"{dataset_path(size)} is not extracted, and the training set "
+                f"size is recorded nowhere else",
+                f"tar xzf {DATASET_ARCHIVE}", size=size,
+                claimed=claim["train_total"])
+        else:
+            report.check(TABLE2_CHECK_NAMES[2], claim["train_total"],
+                         train_total,
+                         detail=f"counted from {dataset_path(size)}",
+                         size=size)
+
+
+# -----------------------------------------------------------------------------
+# Group 1 -- Tables III, IV, VI: QUBO structure
+# -----------------------------------------------------------------------------
+
+STRUCTURE_CHECK_NAMES = (
+    "Perturbed pixels (Table III)",
+    "Perturbation bound epsilon (Table III)",
+    "Total Variables",
+    "Total Constraints (true count)",
+    "Energy offset E_off (an energy, not a count)",
+    "E_off == -(Info.txt Minimum Energy)",
+    "rebuilt QUBO == shipped QUBO_W.txt",
+    "variable order == shipped Variables.json",
+    "training set reproduces the chosen instance",
+)
+assert len(STRUCTURE_CHECK_NAMES) == QUOTA_STRUCTURE
+
+
+def check_structure(report, sizes, missing):
+    report.section(
+        "Tables III, IV, VI -- QUBO structure "
+        "(variables / constraints / energy offset)",
+        GROUP_STRUCTURE)
+    report.note("""
+Each instance is rebuilt from scratch with the authors' own builder,
+bnn_as_qubo.setup_optim_model, and the rebuilt matrix is compared entry by
+entry with the shipped QUBO_W.txt.
+
+The distinction that Tables III, IV and VI were corrected for:
+
+  * Total Constraints is the number of constraints actually encoded in the
+    QCBO and carried into the QUBO -- the equality constraints plus the two
+    perturbation-budget inequalities. It is counted here from H.constraints.
+  * Energy offset E_off is the constant term of the QUBO polynomial. It is an
+    energy in units of the penalty weights, NOT a constraint count. Earlier
+    versions of these tables reported E_off in the Total Constraints column.
+
+Both quantities are recomputed and reported separately below.
+""")
+
+    for size in sizes:
+        claim = PAPER[size]
+        if size in missing:
+            report.instance_header(size)
+            report.outcome(UNAVAILABLE, "QUBO structure",
+                           f"instance data not present ({qubo_dir(size)}/ "
+                           f"is missing)",
+                           f"tar xzf {DATA_ARCHIVE}", size=size)
+            continue
+
+        info = read_info(size)
+        started = time.perf_counter()
+        try:
+            H, ordered = rebuild_qubo(size, info)
+        except Exception as exc:  # pragma: no cover - defensive
+            report.instance_header(size)
+            report.error(STRUCTURE_CHECK_NAMES[0],
+                         f"rebuild failed: {exc!r}", size=size)
+            report_all(report, UNAVAILABLE, STRUCTURE_CHECK_NAMES[1:],
+                       "the QUBO rebuild above failed, so nothing downstream "
+                       "of it could be checked", size=size)
+            continue
+        elapsed = time.perf_counter() - started
+
+        report.instance_header(size, f"rebuilt in {elapsed:.1f} s")
+
+        counts = {key: len(value) for key, value in H.constraints.items()}
+        total_constraints = sum(counts.values())
+        breakdown = " + ".join(f"{key} {value}"
+                               for key, value in sorted(counts.items()))
+        offset = H.to_qubo()[()]
+
+        report.check("Perturbed pixels (Table III)", claim["perturbable"],
+                     len(info["pixels"]), size=size)
+        report.check("Perturbation bound epsilon (Table III)", claim["epsilon"],
+                     info["epsilon"], size=size)
+        report.check("Total Variables", claim["variables"],
+                     len(H.variables), size=size)
+        report.check("Total Constraints (true count)", claim["constraints"],
+                     total_constraints, detail=f"({breakdown})", size=size)
+        report.check("Energy offset E_off (an energy, not a count)",
+                     claim["offset"], offset, size=size)
+        report.assertion(
+            "E_off == -(Info.txt Minimum Energy)",
+            offset == -info["minimum_energy"],
+            f"Info.txt Minimum Energy = {info['minimum_energy']:,}", size=size)
+
+        import numpy as np
+        shipped = load_qubo_matrix(size)
+        rebuilt = dense_from_qubo(H.to_qubo().Q, ordered)
+        same_shape = shipped.shape == rebuilt.shape
+        max_difference = (float(np.abs(rebuilt - shipped).max())
+                          if same_shape else float("inf"))
+        report.assertion(
+            "rebuilt QUBO == shipped QUBO_W.txt",
+            same_shape and max_difference == 0.0,
+            f"{shipped.shape[0]}x{shipped.shape[1]}, "
+            f"max |difference| = {max_difference:g}", size=size)
+
+        with open(variables_path(size), encoding="utf-8") as handle:
+            report.assertion("variable order == shipped Variables.json",
+                             list(ordered) == json.load(handle), size=size)
+
+        crossed = cross_check_dataset(size, info)
+        if crossed is None:
+            report.outcome(
+                SKIPPED, "training set reproduces the chosen instance",
+                "Dataset/ is not extracted; the instance was read from "
+                "Info.txt instead",
+                f"tar xzf {DATASET_ARCHIVE}", size=size)
+        else:
+            as_set, in_order, input_ok, label_ok = crossed
+            report.assertion(
+                "training set reproduces the chosen instance",
+                as_set and input_ok and label_ok,
+                "same perturbable pixel set, clean input and label"
+                + ("" if in_order else
+                   "; note: torch.topk orders the tied pixels differently on "
+                   "this build, so the variable order is taken from Info.txt"),
+                size=size)
+
+
+# -----------------------------------------------------------------------------
+# Group 2 -- Table IV, FEM column
+# -----------------------------------------------------------------------------
+
+LOG_PREFIX = re.compile(r"^\s*\d\d:\d\d:\d\d \| [A-Z]+ \| \w+ \| ?", re.MULTILINE)
+ENERGY_RE = re.compile(r"Best Energy:\s*(-?[\d.]+)")
+
+
+def parse_fem_solutions(path):
+    """Read (energy, solution vector) pairs from FEM_best_configurations.txt.
+
+    The file is a verbatim transcript of the FEM runs, so the multi-device
+    record carries a logging prefix on some lines; it is stripped before
+    parsing.
+    """
+    with open(path, encoding="utf-8") as handle:
+        text = LOG_PREFIX.sub("", handle.read())
+    records = []
+    for match in ENERGY_RE.finditer(text):
+        tail = text[match.end():]
+        start = tail.find("[")
+        if start < 0:
+            continue
+        depth = 0
+        end = -1
+        for position in range(start, len(tail)):
+            if tail[position] == "[":
+                depth += 1
+            elif tail[position] == "]":
+                depth -= 1
+                if depth == 0:
+                    end = position
+                    break
+        if end < 0:
+            continue
+        bits = [int(float(token)) for token in tail[start + 1:end].split()]
+        records.append((float(match.group(1)), bits))
+    return records
+
+
+def reverse_check(size, info, bits_by_qubo_index=None, boolean_input=None):
+    """Replay a solution on the original BNN with an independent forward pass.
+
+    Either pass a QUBO solution vector (decoded here through Variables.json) or
+    a ready-made Boolean input. Returns (ok, description).
+    """
+    import verify_counterexamples as vc
+
+    if boolean_input is None:
+        with open(variables_path(size), encoding="utf-8") as handle:
+            names = json.load(handle)
+        tau_index = {}
+        for position, name in enumerate(names):
+            found = re.fullmatch(r"tau_(\d+)", str(name))
+            if found:
+                tau_index[int(found.group(1))] = position
+        boolean_input = list(info["clean"])
+        for pixel in info["pixels"]:
+            if pixel in tau_index and bits_by_qubo_index[tau_index[pixel]] == 1:
+                boolean_input[pixel] = 1 - boolean_input[pixel]
+
+    matrices = vc.load_weights(checkpoint_path(size))
+    clean_label, _ = vc.forward(matrices, info["clean"])
+    adversarial_label, _ = vc.forward(matrices, boolean_input)
+    changed = [i for i in range(len(boolean_input))
+               if boolean_input[i] != info["clean"][i]]
+    outside = sorted(set(changed) - set(info["pixels"]))
+
+    ok = (clean_label == info["label"]
+          and adversarial_label != clean_label
+          and len(changed) <= info["epsilon"]
+          and not outside)
+    description = (f"{len(changed)} pixels flipped <= budget "
+                   f"{info['epsilon']}, "
+                   f"{'all perturbable' if not outside else f'OUTSIDE: {outside}'}, "
+                   f"prediction {clean_label} -> {adversarial_label}")
+    return ok, description, adversarial_label
+
+
+FEM_CHECK_NAMES = (
+    "FEM best energy x^T Q x",
+    "Energy score E_off - dE (Table IV, FEM)",
+    "reverse check on the original BNN",
+)
+assert len(FEM_CHECK_NAMES) == QUOTA_FEM
+
+
+def check_fem_solutions(report, sizes, missing):
+    report.section(
+        "Table IV -- FEM column (energy score) and reverse check on the BNN",
+        GROUP_FEM)
+    report.note(f"""
+The FEM solution vectors recorded in {FEM_SOLUTIONS_PATH} are evaluated
+directly against the shipped QUBO matrices as x^T Q x, with Q upper triangular
+including the diagonal. The target energy is -E_off; because the objective H_0
+is identically zero, reaching it is an exact certificate that every encoded
+constraint is satisfied, so the energy score E_off - dE equals E_off exactly
+when dE = 0.
+
+Each solution is then decoded into a pixel perturbation through Variables.json
+and replayed through an independent NumPy forward pass of the BNN, which shares
+no code with the QUBO pipeline. This verifies the reported energies without
+rerunning the stochastic FEM search; use --with-fem to also replay the solver.
+""")
+
+    if not os.path.exists(FEM_SOLUTIONS_PATH):
+        print()
+        for size in sizes:
+            report.outcome(UNAVAILABLE, "Table IV, FEM column",
+                           f"{FEM_SOLUTIONS_PATH} not found", size=size,
+                           claimed=-PAPER[size]["fem_score"])
+        return
+
+    import numpy as np
+
+    records = parse_fem_solutions(FEM_SOLUTIONS_PATH)
+    by_length = {}
+    for energy, bits in records:
+        by_length.setdefault(len(bits), (energy, bits))
+    print(f"\n parsed {len(records)} solution vectors from "
+          f"{FEM_SOLUTIONS_PATH}")
+
+    for size in sizes:
+        claim = PAPER[size]
+        report.instance_header(size)
+        if size in missing:
+            report.outcome(UNAVAILABLE, "Table IV, FEM column",
+                           "instance data not present in the repository",
+                           f"tar xzf {DATA_ARCHIVE}", size=size)
+            continue
+        if claim["variables"] not in by_length:
+            report_all(report, UNAVAILABLE, FEM_CHECK_NAMES,
+                       f"no {claim['variables']}-variable solution vector "
+                       f"in {FEM_SOLUTIONS_PATH}", size=size)
+            continue
+
+        recorded_energy, bits = by_length[claim["variables"]]
+        info = read_info(size)
+        matrix = load_qubo_matrix(size)
+        vector = np.asarray(bits, dtype=np.float64)
+
+        if matrix.shape[0] != vector.size:
+            report.error(FEM_CHECK_NAMES[0],
+                         f"solution has {vector.size} entries but QUBO_W.txt "
+                         f"is {matrix.shape[0]}x{matrix.shape[1]}", size=size)
+            report_all(report, UNAVAILABLE, FEM_CHECK_NAMES[1:],
+                       "the recorded solution vector and the shipped QUBO have "
+                       "different sizes, so it cannot be evaluated", size=size)
+            continue
+
+        energy = float(vector @ matrix @ vector)
+        gap = energy - float(info["minimum_energy"])
+        score = claim["offset"] - gap
+
+        report.check("FEM best energy x^T Q x", -claim["offset"], energy,
+                     ok=energy == -float(claim["offset"]),
+                     detail=f"(transcript says {recorded_energy:,.0f})",
+                     size=size)
+        report.check("Energy score E_off - dE (Table IV, FEM)",
+                     claim["fem_score"], score,
+                     ok=score == float(claim["fem_score"]),
+                     detail=f"(dE = {gap:g})", size=size)
+
+        ok, description, _ = reverse_check(size, info, bits_by_qubo_index=bits)
+        report.assertion("reverse check on the original BNN", ok,
+                         description, size=size)
+
+
+# -----------------------------------------------------------------------------
+# Group 3 -- Table V, Z3 baseline
+# -----------------------------------------------------------------------------
+
+Z3_CHECK_NAMES = (
+    "Table V, Z3 result",
+    "witness reverse-checked on the original BNN",
+)
+assert len(Z3_CHECK_NAMES) == QUOTA_Z3
+
+Z3_MISSING_HINT = "pip install -r requirements.txt   # z3-solver"
+
+
+def check_z3(report, sizes, missing, deadline):
+    report.section(
+        "Table V -- exact SMT baseline (Z3) at the epsilon from Info.txt",
+        GROUP_Z3)
+    report.note("""
+Z3.py is re-run in its Table V configuration: one query per instance at the
+perturbation bound recorded in that instance's Info.txt. SAT means a
+counterexample exists inside the budget, i.e. NR (not robust).
+
+Each witness is then reverse-checked with verify_counterexamples.py's
+independent NumPy forward pass, which shares no code with Z3.py.
+
+Runtimes are solve-only and machine dependent; the paper's figures are quoted
+for reference and are not pass/fail criteria.
+""")
+
+    # z3-solver is optional in exactly the way gurobipy and dwave-samplers are,
+    # so a missing one is UNAVAILABLE with a reason, not a traceback.
+    Z3, z3_error = optional_import("Z3")
+    if Z3 is None:
+        print()
+        for size in sizes:
+            report.outcome(UNAVAILABLE, "Table V, Z3 result",
+                           f"Z3.py could not be imported ({z3_error!r})",
+                           Z3_MISSING_HINT, size=size,
+                           claimed=PAPER[size]["z3_result"])
+        return
+
+    for size in sizes:
+        claim = PAPER[size]
+        report.instance_header(size)
+        if size in missing:
+            report.outcome(UNAVAILABLE, "Table V, Z3 result",
+                           "instance data not present in the repository",
+                           f"tar xzf {DATA_ARCHIVE}", size=size)
+            continue
+
+        info = read_info(size)
+        budget = deadline.reset().solver_budget(Z3_TIMEOUT_SECONDS)
+        if budget is None:
+            report_all(report, TIMEOUT, Z3_CHECK_NAMES,
+                       "the --timeout budget was already spent before this "
+                       "check started", "raise --timeout, or --timeout 0 for "
+                       "no limit", size=size, claimed=claim["z3_result"])
+            continue
+        try:
+            with captured(report.verbose):
+                result = Z3.verify_instance(
+                    info_path(size), checkpoint_path(size),
+                    timeout_seconds=budget)
+        except Exception as exc:  # pragma: no cover - defensive
+            report.error(Z3_CHECK_NAMES[0], f"Z3 failed: {exc!r}", size=size)
+            report_all(report, UNAVAILABLE, Z3_CHECK_NAMES[1:],
+                       "the Z3 query above failed, so there is no witness to "
+                       "reverse-check", size=size)
+            continue
+
+        if result.status == "UNKNOWN":
+            report_all(report, TIMEOUT, Z3_CHECK_NAMES,
+                       f"Z3 returned UNKNOWN after "
+                       f"{result.runtime_seconds:.1f} s",
+                       "raise --timeout", size=size,
+                       claimed=claim["z3_result"])
+            continue
+
+        verdict = {"SAT": "NR", "UNSAT": "R"}.get(result.status, result.status)
+        report.check(f"Z3 verdict at epsilon {info['epsilon']}",
+                     claim["z3_result"], verdict,
+                     detail=f"({result.status}, solve "
+                            f"{result.runtime_seconds:.3f} s)", size=size)
+
+        if result.status != "SAT":
+            report.assertion("witness reverse-checked on the original BNN",
+                             False, "no witness: status is not SAT", size=size)
+            continue
+
+        ok, description, adversarial = reverse_check(
+            size, info, boolean_input=result.adversarial_input_boolean)
+        ok = ok and adversarial == result.adversarial_prediction
+        report.assertion("witness reverse-checked on the original BNN", ok,
+                         description, size=size)
+
+
+# -----------------------------------------------------------------------------
+# Group 4 -- Table V, minimum adversarial distance
+# -----------------------------------------------------------------------------
+
+def check_minimum_distance(report, sizes, missing, deadline):
+    report.section(
+        "Table V -- minimum adversarial distance d_min",
+        GROUP_DMIN)
+    report.note("""
+d_min is recomputed two independent ways:
+
+  * exhaustive enumeration of every perturbation by increasing Hamming
+    distance, using verify_counterexamples.py. This is ground truth by
+    construction and is the method the paper used for the 5x5 row.
+  * a Z3 minimum-distance scan over epsilon = 0, 1, 2, ... stopping at the
+    first SAT. This is the method the paper used for the other three rows.
+
+Both are cheap on all four instances here, so each number is confirmed twice.
+(*) marks the method the paper used for that row.
+""")
+
+    # The enumeration half needs only NumPy, so it still runs without
+    # z3-solver; only the scan below becomes UNAVAILABLE.
+    Z3, z3_error = optional_import("Z3")
+    import verify_counterexamples as vc
+
+    for size in sizes:
+        claim = PAPER[size]
+        report.instance_header(size)
+        if size in missing:
+            report.outcome(UNAVAILABLE, "Table V, d_min",
+                           "instance data not present in the repository",
+                           f"tar xzf {DATA_ARCHIVE}", size=size)
+            continue
+
+        paper_method = "enumeration" if size == 5 else "Z3 scan"
+
+        # -- exhaustive enumeration -----------------------------------------
+        label = ("d_min, exhaustive enumeration"
+                 + (" (*)" if paper_method == "enumeration" else ""))
+        try:
+            with captured(report.verbose):
+                enumerated, _, proven_through = vc.brute_force_minimum_distance(
+                    info_path(size), checkpoint_path(size),
+                    max_combinations=MAX_COMBINATIONS_PER_LEVEL)
+            if enumerated is None:
+                report.outcome(
+                    UNAVAILABLE, label,
+                    f"enumeration is exhaustive only through distance "
+                    f"{proven_through}; the next level exceeds the "
+                    f"{MAX_COMBINATIONS_PER_LEVEL:,} combination cap",
+                    size=size, claimed=claim["d_min"])
+            else:
+                report.check(label, claim["d_min"], enumerated,
+                             detail="every smaller distance enumerated "
+                                    "exhaustively", size=size)
+        except Exception as exc:  # pragma: no cover - defensive
+            report.error(label, f"enumeration failed: {exc!r}", size=size)
+
+        # -- Z3 minimum-distance scan ---------------------------------------
+        label = ("d_min, Z3 minimum-distance scan"
+                 + (" (*)" if paper_method == "Z3 scan" else ""))
+        if Z3 is None:
+            report.outcome(UNAVAILABLE, label,
+                           f"Z3.py could not be imported ({z3_error!r}); the "
+                           f"exhaustive enumeration above is unaffected",
+                           Z3_MISSING_HINT, size=size,
+                           claimed=claim["d_min"])
+            continue
+        budget = deadline.reset().solver_budget(Z3_TIMEOUT_SECONDS)
+        if budget is None:
+            report.outcome(TIMEOUT, label,
+                           "the --timeout budget was already spent before this "
+                           "check started",
+                           "raise --timeout, or --timeout 0 for no limit",
+                           size=size, claimed=claim["d_min"])
+            continue
+        try:
+            with captured(report.verbose):
+                summary, _ = Z3.scan_minimum_adversarial_distance(
+                    info_path(size), checkpoint_path(size), start_epsilon=0,
+                    timeout_seconds=budget)
+            if summary.minimum_adversarial_distance is None:
+                report.outcome(TIMEOUT, label,
+                               f"scan ended with status "
+                               f"{summary.scan_status}", "raise --timeout",
+                               size=size, claimed=claim["d_min"])
+            else:
+                report.check(label, claim["d_min"],
+                             summary.minimum_adversarial_distance,
+                             detail=("exact minimum proven"
+                                     if summary.exact_minimum_proven
+                                     else "NOT proven exact"), size=size)
+        except Exception as exc:  # pragma: no cover - defensive
+            report.error(label, f"scan failed: {exc!r}", size=size)
+
+
+# -----------------------------------------------------------------------------
+# Group 5 -- Table IV, Gurobi column, from the recorded solver logs
+# -----------------------------------------------------------------------------
+
+GUROBI_BEST_RE = re.compile(
+    r"^Best objective\s+(-?[\d.eE+]+),\s*best bound\s+(-?[\d.eE+]+),\s*"
+    r"gap\s+([\d.eE+-]+)%", re.MULTILINE)
+GUROBI_COLUMNS_RE = re.compile(r"Optimize a model with .*?(\d+) columns")
+GUROBI_EXPLORED_RE = re.compile(
+    r"^Explored (\d[\d,]*) nodes .*? in ([\d.]+) seconds", re.MULTILINE)
+# An improving incumbent in the branch-and-bound log, e.g.
+#   H19567 17187                    -8013.000000 -27407.343   242%   2.4   20s
+# The leading integer is the node count at which it was found.
+GUROBI_INCUMBENT_RE = re.compile(r"^[H*]\s*(\d+)\s+\d+\s", re.MULTILINE)
+
+
+def gurobi_span_tolerance(limit):
+    """How far past `limit` a no-improvement span may run and still match it.
+
+    The overshoot is the work still in flight when model.terminate() lands, so it
+    tracks the search rate rather than the limit; the four observed values are 22,
+    530, 1,161 and 1,805 nodes. One percent of the limit, floored at 10,000, keeps
+    all four comfortably inside while still separating 10^5 from 10^7.
+    """
+    return max(10_000, limit // 100)
+
+
+def shipped_no_impr_nodes():
+    """run_gurobi_all.DEFAULT_NO_IMPR_NODES, read from source.
+
+    Read rather than imported, because importing run_gurobi_all pulls in gurobipy
+    and this check must work without a license. Returns None if it cannot be read,
+    which is a failure of the check, not a fallback: the point is to test the
+    table the repository actually ships.
+    """
+    import ast
+    try:
+        with open("run_gurobi_all.py", encoding="utf-8") as handle:
+            tree = ast.parse(handle.read())
+    except (OSError, SyntaxError):
+        return None
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+        if "DEFAULT_NO_IMPR_NODES" not in names:
+            continue
+        try:
+            table = ast.literal_eval(node.value)
+        except ValueError:
+            return None
+        if isinstance(table, dict):
+            return table
+    return None
+
+
+def parse_gurobi_log(path):
+    """Read the incumbent, bound, MIP gap and node count out of a Gurobi log."""
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        text = handle.read()
+    best = GUROBI_BEST_RE.search(text)
+    if best is None:
+        return None
+    columns = GUROBI_COLUMNS_RE.search(text)
+    explored = GUROBI_EXPLORED_RE.search(text)
+    incumbents = [int(m.group(1)) for m in GUROBI_INCUMBENT_RE.finditer(text)]
+    nodes = int(explored.group(1).replace(",", "")) if explored else None
+    last_incumbent = incumbents[-1] if incumbents else None
+    return {
+        "best_objective": float(best.group(1)),
+        "best_bound": float(best.group(2)),
+        "gap_percent": float(best.group(3)),
+        "variables": int(columns.group(1)) if columns else None,
+        "nodes": nodes,
+        "seconds": float(explored.group(2)) if explored else None,
+        "interrupted": "Solve interrupted" in text,
+        "time_limit_set": "Set parameter TimeLimit" in text,
+        "proved_optimal": "Optimal solution found" in text,
+        "last_incumbent_node": last_incumbent,
+        "no_improvement_span": (nodes - last_incumbent
+                                if nodes is not None
+                                and last_incumbent is not None else None),
+    }
+
+
+GUROBI_LOG_CHECK_NAMES = (
+    "Gurobi best objective (Table IV)",
+    "Energy score E_off - dE (Table IV, Gurobi)",
+    "model size in the log",
+    "interrupted, with no time limit set",
+    "reported as an incumbent, not proven optimal",
+    "no-improvement span vs the shipped limit",
+)
+assert len(GUROBI_LOG_CHECK_NAMES) == QUOTA_GUROBI_LOGS
+
+
+def check_gurobi_logs(report, sizes, missing, available):
+    report.section(
+        "Table IV -- Gurobi column, from the recorded solver logs",
+        GROUP_GUROBI_LOGS)
+    report.note("""
+The Gurobi runs behind Table IV took 47 minutes to 18.7 hours each on a 32-core
+machine, so they are not rerun by default. Their solver logs are shipped
+instead, and the reported incumbent is read straight out of each one and
+compared with the table. Use --with-gurobi to re-solve from scratch instead.
+
+The logs also record how those runs ended, and this reconstructs it. Every one
+says "Solve interrupted" with no TimeLimit parameter set, and none proves
+optimality. The stop was the early-stopping callback firing, not a hand
+interrupt: the no-improvement span -- nodes explored minus the node of the last
+improving incumbent -- lands just above the limit that was in force, the small
+overshoot being the in-flight nodes that drain after model.terminate(). That
+limit is 10^5 on 5x5 and 7x7 and 10^7 on 11x11 and 28x28, which is what
+run_gurobi_all.DEFAULT_NO_IMPR_NODES now carries; the check below is that the two
+agree. The remaining MIP gaps are printed as context, not as pass/fail criteria.
+""")
+
+    if not available:
+        print()
+        for size in sizes:
+            report.outcome(UNAVAILABLE,
+                           f"{size}x{size} Gurobi best objective (Table IV)",
+                           f"{GUROBI_LOG_DIR}/ is not present",
+                           f"tar xzf {GUROBI_LOG_ARCHIVE}", size=size,
+                           claimed=-PAPER[size]["gurobi_score"])
+        return
+
+    shipped_limits = shipped_no_impr_nodes()
+
+    for size in sizes:
+        claim = PAPER[size]
+        report.instance_header(size)
+        path = GUROBI_LOG_PATTERN.format(size=size)
+        if not os.path.exists(path):
+            report.outcome(UNAVAILABLE, "Gurobi best objective (Table IV)",
+                           f"no solver log at {path}",
+                           f"tar xzf {GUROBI_LOG_ARCHIVE}", size=size,
+                           claimed=-claim["gurobi_score"])
+            continue
+
+        parsed = parse_gurobi_log(path)
+        if parsed is None:
+            report.error(GUROBI_LOG_CHECK_NAMES[0],
+                         f"{path}: no 'Best objective' line", size=size)
+            report_all(report, UNAVAILABLE, GUROBI_LOG_CHECK_NAMES[1:],
+                       f"{path} has no 'Best objective' line, so nothing in it "
+                       f"could be read", size=size)
+            continue
+
+        report.check(GUROBI_LOG_CHECK_NAMES[0],
+                     -float(claim["gurobi_score"]), parsed["best_objective"],
+                     detail=f"({os.path.basename(path)})", size=size)
+
+        # The energy score is deliberately routed through the instance's own
+        # Info.txt, exactly as the FEM column above is. Computing it as
+        # E_off - (best objective + E_off) instead would just be -best objective
+        # and could not fail unless the line above failed too, which is not a
+        # check at all. Taking dE against the Minimum Energy that Info.txt
+        # records makes it an independent route to the table entry: it fails if
+        # the shipped instance and the reported score disagree, even when the
+        # log itself is exactly as reported.
+        if size in missing:
+            report.outcome(UNAVAILABLE, GUROBI_LOG_CHECK_NAMES[1],
+                           "instance data not present, so Info.txt's Minimum "
+                           "Energy is not available to score dE against",
+                           f"tar xzf {DATA_ARCHIVE}", size=size,
+                           claimed=claim["gurobi_score"])
+        else:
+            target = float(read_info(size)["minimum_energy"])
+            gap = parsed["best_objective"] - target
+            report.check(GUROBI_LOG_CHECK_NAMES[1],
+                         claim["gurobi_score"], claim["offset"] - gap,
+                         ok=claim["offset"] - gap == float(
+                             claim["gurobi_score"]),
+                         detail=f"(dE = {gap:g} above Info.txt's Minimum "
+                                f"Energy {target:,.0f})",
+                         size=size)
+
+        if parsed["variables"] is None:
+            report.outcome(UNAVAILABLE, GUROBI_LOG_CHECK_NAMES[2],
+                           f"{os.path.basename(path)} has no 'Optimize a model "
+                           f"with ... columns' line, so the model size cannot "
+                           f"be read from it", size=size,
+                           claimed=claim["variables"])
+        else:
+            report.check(GUROBI_LOG_CHECK_NAMES[2], claim["variables"],
+                         parsed["variables"], detail="columns", size=size)
+        report.assertion(
+            "interrupted, with no time limit set",
+            parsed["interrupted"] and not parsed["time_limit_set"],
+            f"'Solve interrupted', no TimeLimit set", size=size)
+        report.assertion(
+            "reported as an incumbent, not proven optimal",
+            not parsed["proved_optimal"],
+            f"MIP gap {parsed['gap_percent']:.4g}% remaining, "
+            f"{parsed['nodes']:,} nodes in {parsed['seconds']:,.0f} s",
+            size=size)
+        span = parsed["no_improvement_span"]
+        configured = (shipped_limits or {}).get(size)
+        label = "no-improvement span vs the shipped limit"
+        if configured is None:
+            report.assertion(
+                label, False,
+                "could not read DEFAULT_NO_IMPR_NODES from run_gurobi_all.py",
+                size=size)
+        elif span is None:
+            report.assertion(
+                label, False, "no incumbent line found in the log", size=size)
+        else:
+            overshoot = span - configured
+            report.assertion(
+                label,
+                0 <= overshoot < gurobi_span_tolerance(configured),
+                f"{parsed['nodes']:,} - {parsed['last_incumbent_node']:,} = "
+                f"{span:,} nodes without improvement, i.e. the configured "
+                f"{configured:,} plus {overshoot:,} drained after terminate()",
+                size=size)
+
+
+# -----------------------------------------------------------------------------
+# Group 6 -- opt-in: re-solve with Gurobi
+# -----------------------------------------------------------------------------
+
+def check_gurobi(report, sizes, missing, enabled, deadline):
+    report.section("Table IV -- Gurobi column (opt-in)", GROUP_GUROBI)
+    report.note("""
+Solves each shipped QUBO with Gurobi using run_gurobi_all.py's model, its
+early-stopping callback and its per-instance no-improvement limit (10^5 on 5x5
+and 7x7, 10^7 on 11x11 and 28x28 -- the values the reported runs used). Those
+runs took 47 minutes to 18.7 hours, so a run here that reaches the reported
+energy confirms it, while one that falls short is inconclusive rather than a
+contradiction.
+
+Two gaps are reported for every solver run below, and they answer different
+questions. The gap vs the paper's value is the reproduction question. The gap
+vs the target energy is the feasibility question. They are not the same: the
+paper does not claim full feasibility everywhere -- Gurobi is reported at 529
+for 5x5 against a target of 533, for instance. Because the objective H_0 is
+identically zero, a gap of g above the target upper-bounds the number of
+violated encoded constraints, and near the optimum usually equals it.
+""")
+
+    if not enabled:
+        print()
+        for size in sizes:
+            report.outcome(SKIPPED, f"{size}x{size} Gurobi best energy",
+                           "not requested; Gurobi runs can take hours and need "
+                           "a license", "--with-gurobi", size=size,
+                           claimed=-PAPER[size]["gurobi_score"])
+        return
+
+    try:
+        import gurobipy as gp
+        from gurobipy import GRB  # noqa: F401
+        import run_gurobi_all
+    except ImportError as exc:
+        for size in sizes:
+            report.outcome(UNAVAILABLE, f"{size}x{size} Gurobi best energy",
+                           f"gurobipy is not installed ({exc})",
+                           "pip install gurobipy, then obtain a license",
+                           size=size, claimed=-PAPER[size]["gurobi_score"])
+        return
+
+    try:
+        with captured(report.verbose):
+            probe = gp.Model("license_probe")
+            probe.Params.OutputFlag = 0
+            probe.dispose()
+    except Exception as exc:
+        for size in sizes:
+            report.outcome(UNAVAILABLE, f"{size}x{size} Gurobi best energy",
+                           f"no usable Gurobi license: {exc}",
+                           "activate a Gurobi license (grbgetkey ...)",
+                           size=size, claimed=-PAPER[size]["gurobi_score"])
+        return
+
+    for size in sizes:
+        claim = PAPER[size]
+        report.instance_header(size)
+        if size in missing:
+            report.outcome(UNAVAILABLE, "Gurobi best energy",
+                           "instance data not present in the repository",
+                           f"tar xzf {DATA_ARCHIVE}", size=size,
+                           claimed=-claim["gurobi_score"])
+            continue
+
+        matrix = load_qubo_matrix(size)
+        info = read_info(size)
+        if matrix.shape[0] > GUROBI_LIMITED_VARIABLES:
+            print(f"   (this instance has {matrix.shape[0]:,} variables; the "
+                  f"common size-limited license caps at "
+                  f"{GUROBI_LIMITED_VARIABLES:,})")
+        budget = deadline.reset().remaining()
+        if budget is not None and budget <= 0:
+            report.outcome(TIMEOUT, "Gurobi best energy",
+                           "the --timeout budget was already spent before this "
+                           "check started",
+                           "raise --timeout, or --timeout 0 for no limit",
+                           size=size, claimed=-claim["gurobi_score"])
+            continue
+        try:
+            with captured(report.verbose):
+                energy, status, runtime = _gurobi_solve(
+                    run_gurobi_all, matrix, budget, size)
+        except Exception as exc:
+            message = str(exc)
+            if ("size-limited" in message.lower()
+                    or "license" in message.lower()
+                    or "model too large" in message.lower()):
+                report.outcome(
+                    UNAVAILABLE, "Gurobi best energy",
+                    f"license limitation, not a verification failure: "
+                    f"{message.strip()}"
+                    + (f" -- this instance has {matrix.shape[0]:,} variables "
+                       f"and the size-limited license caps at "
+                       f"{GUROBI_LIMITED_VARIABLES:,}"
+                       if matrix.shape[0] > GUROBI_LIMITED_VARIABLES else ""),
+                    "use a full Gurobi license", size=size,
+                    claimed=-claim["gurobi_score"])
+            else:
+                report.error("Gurobi best energy",
+                             f"Gurobi failed: {exc!r}", size=size)
+            continue
+
+        if energy is None:
+            report.outcome(TIMEOUT, "Gurobi best energy",
+                           f"no incumbent after {runtime:.1f} s "
+                           f"(Gurobi status {status})", "raise --timeout",
+                           size=size, claimed=-claim["gurobi_score"])
+            continue
+
+        report.solver_run(
+            "Gurobi best energy (Table IV)", size,
+            paper_energy=-float(claim["gurobi_score"]),
+            target_energy=float(info["minimum_energy"]),
+            energies=[energy], runtime=runtime, runs_label="runs",
+            hint=(f"the paper's Gurobi runs ran to their no-improvement limit, "
+                  f"47 minutes to 18.7 hours; this one was bounded at "
+                  f"{budget:.0f} s. Raise --timeout, or run: "
+                  f"python run_gurobi_all.py"
+                  if budget is not None else "python run_gurobi_all.py"))
+
+
+def _gurobi_solve(module, matrix, budget, size):
+    """run_gurobi_all.solve_qubo_upper_tri with an optional native time limit.
+
+    The no-improvement limit is the per-instance one run_gurobi_all.py uses, so
+    that this reproduces the configuration behind the shipped log for `size`
+    rather than one blanket value; NO_IMPR_NODES still overrides it.
+    """
+    import gurobipy as gp
+
+    limit = module.no_impr_nodes(size)
+
+    if budget is None:
+        return module.solve_qubo_upper_tri(matrix, limit)
+
+    original = gp.Model
+
+    class TimeLimitedModel(gp.Model):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.Params.TimeLimit = max(budget, 1.0)
+
+    gp.Model = TimeLimitedModel
+    try:
+        return module.solve_qubo_upper_tri(matrix, limit)
+    finally:
+        gp.Model = original
+
+
+# -----------------------------------------------------------------------------
+# Group 6 -- opt-in: simulated annealing
+# -----------------------------------------------------------------------------
+
+SA_CHECK_NAMES = ("SA best energy", "reverse check on the original BNN")
+assert len(SA_CHECK_NAMES) == QUOTA_SA
+
+
+def check_sa(report, sizes, missing, enabled, seeds, deadline):
+    report.section("Table IV -- SA column (opt-in)", GROUP_SA)
+    report.note(f"""
+Runs D-Wave Ocean's SimulatedAnnealingSampler on each shipped QUBO with the
+settings SA.py uses ({SA_NUM_READS:,} reads, {SA_NUM_SWEEPS:,} sweeps, a
+{SA_BETA_SCHEDULE} schedule), taking the best sample over the requested seeds.
+SA is stochastic, so reaching the reported energy is PASS and falling short is
+INCONCLUSIVE, never FAIL.
+
+Note that the paper's SA column is NOT the target energy on every instance: it
+reports 8,019 for 11x11 against a target of 8,020, and 1,027,316 for 28x28
+against 1,027,318. The gap vs the paper's value and the gap vs the target are
+therefore reported separately below. Because the objective H_0 is identically
+zero, a gap of g above the target upper-bounds the number of violated encoded
+constraints, and near the optimum usually equals it.
+""")
+    if (SA_NUM_READS, SA_NUM_SWEEPS) != (SA_DEFAULT_READS, SA_DEFAULT_SWEEPS):
+        report.note(
+            "WARNING: VERIFY_SA_READS / VERIFY_SA_SWEEPS override the paper's "
+            f"SA settings\n({SA_DEFAULT_READS:,} reads x "
+            f"{SA_DEFAULT_SWEEPS:,} sweeps). This run uses "
+            f"{SA_NUM_READS:,} x {SA_NUM_SWEEPS:,} and is a smoke test,\n"
+            "not the paper's configuration.")
+
+    if not enabled:
+        print()
+        for size in sizes:
+            report.outcome(SKIPPED, f"{size}x{size} SA best energy",
+                           "not requested; SA takes minutes for 5x5 and hours "
+                           "for 28x28", "--with-sa", size=size,
+                           claimed=-PAPER[size]["sa_score"])
+        return
+
+    try:
+        import dimod
+        from dwave.samplers import SimulatedAnnealingSampler
+    except ImportError as exc:
+        for size in sizes:
+            report.outcome(UNAVAILABLE, f"{size}x{size} SA best energy",
+                           f"dimod / dwave-samplers not installed ({exc})",
+                           "pip install -r requirements.txt", size=size,
+                           claimed=-PAPER[size]["sa_score"])
+        return
+
+    for size in sizes:
+        claim = PAPER[size]
+        report.instance_header(size)
+        if size in missing:
+            report_all(report, UNAVAILABLE, SA_CHECK_NAMES,
+                       "instance data not present in the repository",
+                       f"tar xzf {DATA_ARCHIVE}", size=size,
+                       claimed=-claim["sa_score"])
+            continue
+
+        info = read_info(size)
+        print(f"   running {seeds} seed(s) at {SA_NUM_READS:,} reads x "
+              f"{SA_NUM_SWEEPS:,} sweeps ...", flush=True)
+        bqm = dimod.BinaryQuadraticModel.from_qubo(qubo_dict(size))
+        sampler = SimulatedAnnealingSampler()
+
+        energies = []
+        best_sample = None
+        deadline.reset()
+        started = time.perf_counter()
+        for seed in range(seeds):
+            if deadline.expired():
+                break
+            sampleset = sampler.sample(
+                bqm, num_reads=SA_NUM_READS, num_sweeps=SA_NUM_SWEEPS,
+                beta_schedule_type=SA_BETA_SCHEDULE, seed=1234 + seed)
+            energy = float(sampleset.first.energy)
+            if not energies or energy < min(energies):
+                best_sample = sampleset.first.sample
+            energies.append(energy)
+        runtime = time.perf_counter() - started
+
+        if not energies:
+            report_all(report, TIMEOUT, SA_CHECK_NAMES,
+                       "--timeout expired before the first seed finished",
+                       "raise --timeout, or --timeout 0 for no limit",
+                       size=size, claimed=-claim["sa_score"])
+            continue
+
+        report.solver_run(
+            "SA best energy (Table IV)", size,
+            paper_energy=-float(claim["sa_score"]),
+            target_energy=float(info["minimum_energy"]),
+            energies=energies, runtime=runtime,
+            hint="raise --sa-seeds / --timeout, or run: python SA.py")
+
+        # The reverse check only means something on a feasible sample: below
+        # the target energy some encoded constraint is unsatisfied, so a
+        # decoded perturbation is not expected to flip the prediction. Say so
+        # rather than dropping the check, which used to leave no trace at all.
+        if min(energies) <= float(info["minimum_energy"]):
+            ok, description, _ = reverse_check(
+                size, info,
+                bits_by_qubo_index=[int(best_sample[i])
+                                    for i in range(claim["variables"])])
+            report.assertion(SA_CHECK_NAMES[1], ok, description, size=size)
+        else:
+            report.outcome(
+                INCONCLUSIVE, SA_CHECK_NAMES[1],
+                f"this SA run stopped {min(energies) - info['minimum_energy']:,.0f} "
+                f"above the target energy, so its best sample violates at least "
+                f"one encoded constraint and is not a counterexample to replay",
+                "raise --sa-seeds / --timeout, or run: python SA.py", size=size)
+
+
+# -----------------------------------------------------------------------------
+# Group 7 -- opt-in: replay the FEM solver
+# -----------------------------------------------------------------------------
+
+FEM_HYPERPARAMETER_ROW = re.compile(
+    r"^\|\s*(\d+)x\1\s*/[^|]*\|\s*(-?[\d.]+)\s*\|"
+    r"\s*([\deE.+-]+)\s*\|\s*([\deE.+-]+)\s*\|\s*([\deE.+-]+)\s*\|"
+    r"\s*([\deE.+-]+)\s*\|\s*([\deE.+-]+)\s*\|\s*([\deE.+-]+)\s*\|"
+    r"\s*([\deE.+-]+)\s*\|\s*(\d+)\s*\|", re.MULTILINE)
+
+
+def parse_fem_hyperparameters(path):
+    """Read the recorded FEM hyperparameters out of FEM_HYPERPARAMETERS.md."""
+    if not os.path.exists(path):
+        return {}
+    table = {}
+    with open(path, encoding="utf-8") as handle:
+        rows = handle.read()
+    for match in FEM_HYPERPARAMETER_ROW.finditer(rows):
+        size = int(match.group(1))
+        table[size] = {
+            "energy": float(match.group(2)),
+            "lr": float(match.group(3)),
+            "wd": float(match.group(4)),
+            "alpha": float(match.group(5)),
+            "mom": float(match.group(6)),
+            "c_grad": float(match.group(7)),
+            "Tmin": float(match.group(8)),
+            "Tmax": float(match.group(9)),
+            "seed": int(match.group(10)),
+        }
+    return table
+
+
+def check_fem_replay(report, sizes, missing, enabled, deadline):
+    report.section("Table IV -- replaying the FEM solver (opt-in)",
+                   GROUP_FEM_REPLAY)
+    report.note(f"""
+Replays FEM at the hyperparameters recorded in {FEM_HYPERPARAMETERS_PATH},
+using FEM.py's own batched solver. FEM's coordinate search is stochastic and the
+recorded values are the state of that search when the best energy was found, so
+this is NOT expected to reproduce the reported energy exactly. Reaching the
+reported energy is PASS; falling short is INCONCLUSIVE, never FAIL. The
+energies themselves are verified exactly from the recorded solution vectors
+above, which is the stronger check. As for the other solvers, the gap vs the
+paper's value and the gap vs the target energy are reported separately.
+""")
+
+    if not enabled:
+        print()
+        for size in sizes:
+            report.outcome(SKIPPED, f"{size}x{size} FEM solver replay",
+                           "not requested; FEM's original runs took 638 s to "
+                           "21,898 s per instance", "--with-fem", size=size,
+                           claimed=-PAPER[size]["fem_score"])
+        return
+
+    try:
+        import numpy as np
+        import torch  # noqa: F401
+        import FEM
+    except Exception as exc:
+        for size in sizes:
+            report.outcome(UNAVAILABLE, f"{size}x{size} FEM solver replay",
+                           f"FEM.py could not be imported ({exc!r})",
+                           size=size, claimed=-PAPER[size]["fem_score"])
+        return
+
+    table = parse_fem_hyperparameters(FEM_HYPERPARAMETERS_PATH)
+
+    for size in sizes:
+        claim = PAPER[size]
+        report.instance_header(size)
+        if size in missing:
+            report.outcome(UNAVAILABLE, "FEM solver replay",
+                           "instance data not present in the repository",
+                           f"tar xzf {DATA_ARCHIVE}", size=size,
+                           claimed=-claim["fem_score"])
+            continue
+        if size not in table:
+            report.outcome(UNAVAILABLE, "FEM solver replay",
+                           f"no recorded hyperparameters for {size}x{size} in "
+                           f"{FEM_HYPERPARAMETERS_PATH}", size=size,
+                           claimed=-claim["fem_score"])
+            continue
+
+        parameters = table[size]
+        info = read_info(size)
+        matrix = load_qubo_matrix(size)
+        symmetric = (matrix + matrix.T) / 2.0
+        h_vector = np.diag(symmetric).copy()
+        j_matrix = symmetric - np.diag(h_vector)
+
+        deadline.reset()
+        started = time.perf_counter()
+        try:
+            with captured(report.verbose):
+                energies, configurations, _, _ = FEM.param_search_batched(
+                    seeds=np.array([parameters["seed"]], dtype=np.float32),
+                    J=j_matrix, h=h_vector, betamode="inv",
+                    Tmax=np.array([parameters["Tmax"]], dtype=np.float32),
+                    Tmin=np.array([parameters["Tmin"]], dtype=np.float32),
+                    N_step=100, lr=np.array([parameters["lr"]],
+                                            dtype=np.float32),
+                    batch=100,
+                    c_grad=np.array([parameters["c_grad"]], dtype=np.float32),
+                    dev="cpu",
+                    opt_params=np.array([[parameters["alpha"],
+                                          parameters["wd"],
+                                          parameters["mom"]]],
+                                        dtype=np.float32),
+                    optimizer="rmsprop")
+        except Exception as exc:
+            report.error("FEM solver replay", f"FEM failed: {exc!r}", size=size)
+            continue
+        runtime = time.perf_counter() - started
+
+        if energies is None or len(energies) == 0:
+            report.outcome(INCONCLUSIVE, "FEM solver replay",
+                           "the solver returned no samples", size=size,
+                           claimed=-claim["fem_score"])
+            continue
+
+        report.solver_run(
+            "FEM best energy, solver replay (Table IV)", size,
+            paper_energy=-float(claim["fem_score"]),
+            target_energy=float(info["minimum_energy"]),
+            energies=[float(value) for value in energies], runtime=runtime,
+            runs_label="batches",
+            hint="python FEM.py    # the full coordinate search; see "
+                 "FEM_HYPERPARAMETERS.md. The recorded solution vector is "
+                 "already verified exactly above.")
+
+
+# -----------------------------------------------------------------------------
+# Group 9 -- Table VII: the two-class hardware instance
+# -----------------------------------------------------------------------------
+
+def build_hardware_model(pickled):
+    """Rebuild the two-class PCBO from the pickled constraint dictionaries.
+
+    This follows the authors' own Verify.ipynb exactly: the 'lt' entries go
+    through add_constraint_lt_zero and the 'eq' entries through
+    add_constraint_eq_zero. The objective H_0 is identically zero here too, so
+    the QUBO is just the penalty sum and the pickled 'qubo' dictionary must come
+    back out of it unchanged.
+    """
+    import qubovert as qv
+    from qubovert import boolean_var
+
+    def term(entry):
+        built = qv.PUBO()
+        for variables, coefficient in entry.items():
+            if len(variables) == 0:
+                built += coefficient
+            elif len(variables) == 1:
+                built += boolean_var(variables[0]) * coefficient
+            else:
+                built += (boolean_var(variables[0])
+                          * boolean_var(variables[1]) * coefficient)
+        return built
+
+    model = qv.PCBO()
+    for entry in pickled["constraints"]["lt"]:
+        model.add_constraint_lt_zero(term(entry))
+    for entry in pickled["constraints"]["eq"]:
+        model.add_constraint_eq_zero(term(entry))
+    return model
+
+
+def count_satisfied(model, solution):
+    """Count satisfied constraints using qubovert's own validity predicates."""
+    predicates = {
+        "eq": lambda value: value == 0,
+        "ne": lambda value: value != 0,
+        "lt": lambda value: value < 0,
+        "le": lambda value: value <= 0,
+        "gt": lambda value: value > 0,
+        "ge": lambda value: value >= 0,
+    }
+    satisfied = total = 0
+    for kind, constraints in model.constraints.items():
+        for constraint in constraints:
+            total += 1
+            satisfied += bool(predicates[kind](constraint.value(solution)))
+    return satisfied, total
+
+
+HARDWARE_SA_CHECK_NAMES = (
+    "SA best energy (Table VII)",
+    "every encoded constraint satisfied",
+    "Constraints satisfied (corrected Table VII)",
+)
+
+HARDWARE_GUROBI_CHECK_NAMES = (
+    "Best energy",
+    "every encoded constraint satisfied",
+    "Constraints satisfied (corrected Table VII)",
+)
+
+
+def check_hardware_sa(report, model, qubo, deadline):
+    """Table VII's SA row: no vector was archived, so re-run the solver here.
+
+    Unlike the two hardware rows this is not a re-evaluation of a recorded
+    sample -- simulated annealing is cheap enough on this instance to just run
+    it. Being stochastic, reaching the target is PASS and falling short is
+    INCONCLUSIVE, never FAIL.
+    """
+    target = -float(qubo[()])
+    samplers, dwave_error = optional_import("dwave.samplers")
+    if samplers is None:
+        # One entry per check this row owes, not a single line that quietly
+        # takes two others down with it.
+        report_all(report, UNAVAILABLE, HARDWARE_SA_CHECK_NAMES,
+                   f"dimod / dwave-samplers not installed ({dwave_error!r})",
+                   "pip install -r requirements.txt",
+                   claimed=HARDWARE["sa_constraints"])
+        return
+    SimulatedAnnealingSampler = samplers.SimulatedAnnealingSampler
+
+    print(f"   running up to {len(HARDWARE_SA_SEEDS)} seed(s) at "
+          f"{HARDWARE_SA_READS:,} reads, stopping at the first that reaches "
+          f"the target ...", flush=True)
+    sampler = SimulatedAnnealingSampler()
+    energies, best_sample = [], None
+    deadline.reset()
+    started = time.perf_counter()
+    for seed in HARDWARE_SA_SEEDS:
+        sampleset = sampler.sample_qubo(qubo.Q, num_reads=HARDWARE_SA_READS,
+                                        seed=seed)
+        sample = {int(key): int(value)
+                  for key, value in sampleset.first.sample.items()}
+        # Recomputed from the QUBO rather than taken from the sampler, exactly
+        # as the Fujitsu row above is.
+        energy = float(qubo.value(sample) - qubo[()])
+        if not energies or energy < min(energies):
+            best_sample = sample
+        energies.append(energy)
+        if energy <= target or deadline.expired():
+            break
+    runtime = time.perf_counter() - started
+
+    report.solver_run(
+        "SA best energy (Table VII)", None,
+        paper_energy=target, target_energy=target,
+        energies=energies, runtime=runtime,
+        hint="rerun -- SA is stochastic. The authors' own SA_Verify.ipynb, in "
+             f"{HARDWARE_ARCHIVE}, is the same computation")
+    print(f"{'':<20}note   : Table VII reports "
+          f"{HARDWARE['sa_time']} s for this row; wall time is machine "
+          f"dependent and is not asserted")
+
+    converted = model.convert_solution(best_sample)
+    satisfied, total = count_satisfied(model, converted)
+
+    if min(energies) > target:
+        report_all(
+            report, INCONCLUSIVE, HARDWARE_SA_CHECK_NAMES[1:],
+            "this run of SA did not reach the target energy, so its constraint "
+            "count says nothing about the reported row",
+            "rerun, or raise HARDWARE_SA_READS",
+            claimed=HARDWARE["sa_constraints"])
+        return
+
+    report.assertion(HARDWARE_SA_CHECK_NAMES[1],
+                     model.is_solution_valid(converted),
+                     f"qubovert is_solution_valid True, penalty value "
+                     f"{model.value(converted):g}, so the target energy is "
+                     f"attained exactly")
+    report.check(HARDWARE_SA_CHECK_NAMES[2],
+                 HARDWARE["sa_constraints"], satisfied,
+                 detail=f"of {total}; the table prints 1,273 here too, the "
+                        f"same QUBO term count")
+
+
+def check_hardware_structure(report, pickled):
+    """Section IV-B's coupling and coefficient statistics for this instance.
+
+    The paragraph that explains the quantum annealer's result makes several
+    quantitative claims about the shape of this QUBO, and all of them come out
+    of the two dictionaries already loaded above: `qubo` for the couplings and
+    `constraints` for where they came from. Two conventions matter here.
+
+      * A "coupling" is an off-diagonal QUBO term. qubovert writes a linear term
+        as the diagonal entry (i, i), so the couplings are the keys with
+        i != j and the diagonal is excluded from every count below.
+      * The coupling a squared residual induces between two of its variables is
+        2 * w_i * w_j: expanding (sum_i w_i x_i + c)^2 gives each unordered pair
+        that coefficient. That is the arithmetic behind "weights that run to 512
+        produce couplings that run to 512^2", and it is what the last two checks
+        recompute rather than assume.
+    """
+    import statistics
+    from itertools import combinations
+
+    print("\n Section IV-B: why this instance is hard for an analog annealer")
+    qubo = pickled["qubo"]
+    couplings = {key: value for key, value in qubo.items() if key[0] != key[1]}
+    vertices = {index for key in qubo for index in key}
+    possible = len(vertices) * (len(vertices) - 1) // 2
+
+    report.check("Possible couplings, C(113, 2)",
+                 HARDWARE["possible_couplings"], possible)
+    report.check("Couplings present", HARDWARE["couplings"], len(couplings),
+                 detail=f"of {possible:,} possible, so the logical graph is "
+                        f"{len(couplings) / possible:.1%} dense")
+
+    degree = {vertex: 0 for vertex in vertices}
+    for left, right in couplings:
+        degree[left] += 1
+        degree[right] += 1
+    median_degree = statistics.median(degree.values())
+    report.check("Median logical degree", HARDWARE["median_degree"],
+                 int(median_degree),
+                 detail=f"against the {HARDWARE['pegasus_couplers']} couplers a "
+                        f"Pegasus qubit carries, so the embedding must chain; "
+                        f"degrees run {min(degree.values())} to "
+                        f"{max(degree.values())}")
+
+    magnitudes = [abs(value) for value in qubo.values() if value]
+    report.check("Smallest coefficient magnitude",
+                 HARDWARE["min_coefficient"], int(min(magnitudes)))
+    report.check("Largest coefficient magnitude",
+                 HARDWARE["max_coefficient"], int(max(magnitudes)),
+                 detail="five orders of magnitude above the smallest")
+    largest_coupling = int(max(abs(value) for value in couplings.values()))
+    report.check("Largest coupling, claimed to be 512^2",
+                 HARDWARE["max_coupling"], largest_coupling,
+                 ok=(largest_coupling == HARDWARE["max_coupling"] == 512 ** 2),
+                 detail=f"512^2 = {512 ** 2:,}; "
+                        f"{sum(1 for v in couplings.values() if abs(v) == largest_coupling)} "
+                        f"coupling(s) reach it")
+
+    # Where the couplings and the range come from: the wide sign-layer sums
+    # against everything else.
+    entries = pickled["constraints"]["eq"] + pickled["constraints"]["lt"]
+
+    def support(entry):
+        return [key[0] for key in entry if len(key) == 1]
+
+    def weights(entry):
+        return sorted((abs(entry[key]) for key in entry if len(key) == 1),
+                      reverse=True)
+
+    def induced_coupling(entry):
+        w = weights(entry)
+        return 2 * w[0] * w[1] if len(w) > 1 else 0
+
+    wide = [entry for entry in entries
+            if len(support(entry)) == HARDWARE["sign_layer_support"]]
+    pairs = set()
+    for entry in wide:
+        for pair in combinations(sorted(support(entry)), 2):
+            pairs.add(pair)
+    report.check(
+        f"Couplings from the {len(wide)} sign-layer residuals",
+        HARDWARE["sign_layer_couplings"], len(pairs),
+        ok=(len(wide) == HARDWARE["sign_layer_residuals"]
+            and len(pairs) == HARDWARE["sign_layer_couplings"]),
+        detail=f"{len(wide)} residuals over "
+               f"{HARDWARE['sign_layer_support']} variables each, "
+               f"{HARDWARE['sign_layer_residuals']} * "
+               f"C({HARDWARE['sign_layer_support']}, 2) = "
+               f"{len(pairs):,} of the {len(couplings):,} couplings; their "
+               f"weights are the place values 1..{int(max(weights(wide[0])))}")
+
+    budget = pickled["constraints"]["lt"][0]
+    others = [entry for entry in entries
+              if len(support(entry)) != HARDWARE["sign_layer_support"]]
+    report.check(
+        f"Largest coupling squared out of the other {len(others)} residuals",
+        HARDWARE["other_max_coupling"],
+        int(max(induced_coupling(entry) for entry in others)),
+        ok=(len(others) == HARDWARE["other_residuals"]
+            and max(induced_coupling(e) for e in others)
+            == HARDWARE["other_max_coupling"]),
+        detail=f"{len(others)} residuals carrying weights of at most "
+               f"{int(max(w for e in others for w in weights(e)))}, so squaring "
+               f"alone produces nothing wide")
+    report.check(
+        "Largest coupling squared out of the perturbation budget",
+        HARDWARE["budget_max_coupling"], int(induced_coupling(budget)),
+        ok=(len(support(budget)) == HARDWARE["budget_support"]
+            and set(weights(budget)) == {1}
+            and induced_coupling(budget) == HARDWARE["budget_max_coupling"]),
+        detail=f"a unit-weight constraint over {len(support(budget))} "
+               f"variables")
+
+
+def check_hardware(report, available, deadline):
+    report.section("Table VII -- the two-class instance: hardware rows and SA",
+                   GROUP_HARDWARE)
+    report.note("""
+Table VII was produced on a D-Wave quantum annealer and on Fujitsu's Digital
+Annealer, on a separate two-class instance. That instance, the Gurobi and both
+hardware solutions and the authors' own Verify.ipynb, Verify_Gurobi.ipynb and
+SA_Verify.ipynb now ship in data/hardware_results.tar.gz, so the rows can be
+checked here. The hardware itself is not re-run -- these are the recorded
+samples, re-evaluated against the QUBO and against every encoded constraint. The
+SA row is the exception: no SA vector was archived, so the solver is simply
+re-run below, which on this instance costs a couple of seconds.
+
+READ THIS BEFORE THE ROWS BELOW. Table VII's "Constraints Satisfied" column
+currently prints 1,273 for Gurobi / DA / SA and 356 for the QA. Neither figure
+is a constraint count. This instance has 65 encoded constraints in total:
+
+  * 1,273 is a count of QUBO terms, not of constraints. It is the size of the
+    dictionary the authors' own builder returns, len(H.to_qubo()): this
+    instance's 1,272 linear and quadratic terms plus the single constant-offset
+    entry. Both of those numbers are recomputed below. The instance's file
+    name carries the same pair -- 113-1273-... is 113 variables, 1,273 terms.
+  * 356 is the QA's energy gap above the target, not a number of constraints.
+    It happens to upper-bound the violations, as energy gaps do here, but it
+    is 5.5x the total number of constraints that exist.
+
+This is the same confusion between an energy and a constraint count that was
+corrected in Tables III, IV and VI, and Table VII needs the same correction.
+The rows below check the CORRECTED column -- 65 out of 65 for Gurobi, for the
+Digital Annealer and for simulated annealing, 36 out of 65 for the quantum
+annealer -- together with the energies and runtimes, which are what the solvers
+actually reported.
+""")
+    print()
+
+    if not available:
+        report.outcome(UNAVAILABLE, "Table VII, two-class instance",
+                       f"{HARDWARE_DIR}/ is not present",
+                       f"tar xzf {HARDWARE_ARCHIVE}")
+        return
+
+    import pickle
+
+    with open(HARDWARE_QUBO, "rb") as handle:
+        pickled = pickle.load(handle)
+    model = build_hardware_model(pickled)
+    qubo = model.to_qubo()
+
+    print(" the two-class instance")
+    report.assertion(
+        "rebuilt QUBO == the shipped qubo dictionary",
+        qubo.Q == pickled["qubo"],
+        f"{len(pickled['qubo']):,} terms, rebuilt with the authors' "
+        f"Verify.ipynb recipe")
+    report.check("Variables", HARDWARE["variables"], len(model.variables))
+    counts = {kind: len(value) for kind, value in model.constraints.items()}
+    report.check("Encoded constraints (the true total)",
+                 HARDWARE["constraints"], sum(counts.values()),
+                 detail="(" + " + ".join(f"{k} {v}" for k, v
+                                         in sorted(counts.items())) + ")")
+    report.check("QUBO terms", HARDWARE["qubo_terms"], len(qubo.Q))
+    report.check("Energy offset E_off", HARDWARE["offset"], qubo[()],
+                 detail="so the target energy is "
+                        f"{-HARDWARE['offset']:,}")
+
+    check_hardware_structure(report, pickled)
+
+    # -- Fujitsu Digital Annealer ---------------------------------------------
+    print("\n Digital Annealer (Fujitsu)")
+    with open(HARDWARE_FUJITSU, "rb") as handle:
+        raw = pickle.load(handle)
+    solution = {int(key): int(value) for key, value in raw.items()}
+    converted = model.convert_solution(solution)
+    with open(HARDWARE_FUJITSU_TIME, "rb") as handle:
+        timing = pickle.load(handle)[-1]
+
+    satisfied, total = count_satisfied(model, converted)
+    energy = qubo.value(solution) - qubo[()]
+    report.check("Best energy", HARDWARE["fujitsu_energy"], energy,
+                 detail=f"(the recorded run reports "
+                        f"{timing['energy']:,})")
+    report.assertion("every encoded constraint satisfied",
+                     model.is_solution_valid(converted),
+                     f"qubovert is_solution_valid True, penalty value "
+                     f"{model.value(converted):g}, so the target energy is "
+                     f"attained exactly")
+    report.check("Constraints satisfied (corrected Table VII)",
+                 HARDWARE["fujitsu_constraints"], satisfied,
+                 detail=f"of {total}; the table prints 1,273, which is the "
+                        f"QUBO term count len(H.to_qubo()) = 1,272 terms + "
+                        f"the offset entry")
+    report.check("Total time (s)", HARDWARE["fujitsu_time"],
+                 float(timing["time"]))
+
+    # -- D-Wave quantum annealer ----------------------------------------------
+    print("\n Quantum Annealer (D-Wave)")
+    with open(HARDWARE_DWAVE, "rb") as handle:
+        frame = pickle.load(handle)
+    best = frame.loc[frame["energy"].idxmin()]
+    sample = {index: int(best[index]) for index in range(HARDWARE["variables"])}
+    converted = model.convert_solution(sample)
+    satisfied, total = count_satisfied(model, converted)
+    gap = qubo.value(sample) - 0.0   # penalty value == energy above the target
+
+    report.check("Shots in the returned dataframe", HARDWARE["dwave_shots"],
+                 int(frame["num_occurrences"].sum()),
+                 detail=f"{len(frame):,} distinct samples, the archived batch "
+                        f"of the 5,000-shot run of Table VII")
+    # Scored from the sample bits through the QUBO, not read out of the
+    # dataframe's own `energy` column. The column only selects which row to
+    # look at; if the recorded bits and the recorded energy disagree, this is
+    # what notices.
+    report.check("Best energy over all samples, rescored from the bits",
+                 HARDWARE["dwave_energy"],
+                 float(qubo.value(sample) - qubo[()]),
+                 detail="the dataframe's own energy column says "
+                        f"{float(best['energy']):,.0f}")
+    report.check("Constraints satisfied (corrected Table VII)",
+                 HARDWARE["dwave_constraints"], satisfied,
+                 detail=f"of {total}; the table prints 356, which is the "
+                        f"energy gap")
+    report.assertion(
+        "the printed 356 is the energy gap, not a constraint count",
+        gap == 356.0,
+        f"gap above the target is {gap:,.0f}; it upper-bounds the "
+        f"{total - satisfied} violated constraints but is not a count")
+    report.assertion(
+        "not a feasible solution, so no non-robustness certificate",
+        not model.is_solution_valid(converted),
+        f"{total - satisfied} of {total} constraints violated, "
+        f"chain break fraction {best['chain_break_fraction']:.3f}")
+    # "no returned sample kept all of its chains intact". Counted over the whole
+    # archived batch rather than over the best sample alone, since that is what
+    # the sentence claims.
+    breaks = frame["chain_break_fraction"]
+    report.check("Samples with every chain intact",
+                 HARDWARE["dwave_intact_chain_samples"], int((breaks == 0).sum()),
+                 detail=f"of {len(frame):,} archived samples; the smallest "
+                        f"chain-break fraction observed is {breaks.min():.5f} "
+                        f"and the largest {breaks.max():.5f}")
+
+    # -- simulated annealing, re-run rather than re-evaluated -----------------
+    print("\n Simulated Annealing (re-run here; no sample was archived)")
+    check_hardware_sa(report, model, qubo, deadline)
+
+    # -- Gurobi, from the vector supplied after submission ----------------------
+    print("\n Gurobi (vector supplied by the first author after submission)")
+    if not os.path.exists(HARDWARE_GUROBI):
+        # Only reachable with an archive predating the supplied vector.
+        report_all(report, UNAVAILABLE, HARDWARE_GUROBI_CHECK_NAMES,
+                   f"{HARDWARE_GUROBI} is not present",
+                   f"re-extract with: tar xzf {HARDWARE_ARCHIVE}",
+                   claimed=HARDWARE["gurobi_constraints"])
+        return
+    with open(HARDWARE_GUROBI, "rb") as handle:
+        raw = pickle.load(handle)
+    solution = {int(key): int(value) for key, value in raw.items()}
+    converted = model.convert_solution(solution)
+    satisfied, total = count_satisfied(model, converted)
+
+    # Scored the same way the Fujitsu row above is: through the rebuilt QUBO,
+    # not read back from anything the solver recorded.
+    report.check(HARDWARE_GUROBI_CHECK_NAMES[0], HARDWARE["gurobi_energy"],
+                 qubo.value(solution) - qubo[()],
+                 detail="the target energy, so this run found a global minimum")
+    report.assertion(HARDWARE_GUROBI_CHECK_NAMES[1],
+                     model.is_solution_valid(converted),
+                     f"qubovert is_solution_valid True, penalty value "
+                     f"{model.value(converted):g}, so the target energy is "
+                     f"attained exactly")
+    report.check(HARDWARE_GUROBI_CHECK_NAMES[2],
+                 HARDWARE["gurobi_constraints"], satisfied,
+                 detail=f"of {total}; the table printed 1,273 here too, the "
+                        f"same QUBO term count")
+    print(f"{'':<20}note   : Table VII reports "
+          f"{HARDWARE['gurobi_time']} s for this row; wall time is machine "
+          f"dependent and is not asserted")
+
+
+# -----------------------------------------------------------------------------
+# Group 10 -- Section IV-B: the same instance in its LINEAR constraint form
+# -----------------------------------------------------------------------------
+
+# The linear form solves in milliseconds, so a single timed run is dominated by
+# whatever the interpreter happened to be doing first: the very first Gurobi
+# model in a process carries the license handshake and the first NumPy-to-solver
+# hand-off. Best of a few runs is what the paper's figures are, and the timings
+# are only ever printed, never asserted.
+LINEAR_TIMING_REPEATS = 3
+
+LINEAR_CHECK_NAMES = (
+    "Feasible perturbations, by enumeration",
+    "Minimum adversarial distance d_min, by enumeration",
+    "Digital Annealer perturbation size",
+    "Gurobi vector perturbation size",
+    "Z3 witness satisfies every linear constraint",
+    "d_min proved by Z3 on the linear form",
+    "d_min proved by Gurobi on the linear form",
+)
+assert len(LINEAR_CHECK_NAMES) == QUOTA_LINEAR
+
+
+def check_linear_baseline(report, available, with_gurobi, deadline):
+    """Section IV-B's complete baselines on the two-class instance.
+
+    The heavy lifting is in linear_baseline.py, which is also runnable on its
+    own; this function is the assertion layer over it. Runtimes are printed and
+    never asserted, exactly as Table VII's Gurobi and SA runtimes are not: the
+    paper's figures for this paragraph were measured on one machine and a
+    reviewer's will differ. What IS asserted is the arithmetic those runtimes
+    accompany -- the feasible count, d_min, and the two archived vectors'
+    perturbation sizes -- and those are machine independent.
+    """
+    report.section("Section IV-B -- the same instance in its linear "
+                   "constraint form", GROUP_LINEAR)
+    report.note("""
+Table VII is five solvers applied to the QUBO. Section IV-B also reports the
+same instance solved in the LINEAR constraint form the QUBO was built from --
+the 64 equalities and the perturbation-budget inequality, handed to the solver
+directly rather than squared into a penalty. Both forms ship in the same
+pickle: constraints['eq'] and constraints['lt'] are that linear system, and
+every one of the 65 entries is strictly linear.
+
+That comparison is what rescopes the 168x figure of Table VII. It is a speedup
+over solvers given the QUBO encoding, not over the best available method for
+this instance: Gurobi handles the linear form in about a millisecond against the
+61.447 s of Table VII, and Z3 and plain enumeration are both well under a
+tenth of a second.
+
+Three independent methods agree on the two numbers checked below. Only 15 of
+the 113 variables are free -- 94 are determined by the equalities and 4 are
+slack ancillas the penalisation adds -- so exhaustive enumeration over the
+2^15 perturbation patterns is available as a third opinion alongside the two
+solvers, and it is the one that runs by default here, since it needs nothing
+but NumPy.
+""")
+    print()
+
+    if not available:
+        report.outcome(UNAVAILABLE, "Section IV-B, linear constraint form",
+                       f"{HARDWARE_DIR}/ is not present",
+                       f"tar xzf {HARDWARE_ARCHIVE}")
+        return
+
+    try:
+        import linear_baseline
+    except ImportError as error:  # pragma: no cover - defensive
+        report_all(report, UNAVAILABLE, LINEAR_CHECK_NAMES,
+                   f"linear_baseline.py could not be imported ({error!r})")
+        return
+
+    with open(HARDWARE_QUBO, "rb") as handle:
+        import pickle
+        pickled = pickle.load(handle)
+    form = linear_baseline.LinearForm(pickled)
+    claimed = linear_baseline.CLAIMED
+
+    print(f"   {len(form.equalities)} equalities + {len(form.inequalities)} "
+          f"budget inequality over {len(form.names)} named variables, all "
+          f"strictly linear")
+
+    # -- enumeration, the license-free third opinion --------------------------
+    enumeration = linear_baseline.enumerate_patterns(form)
+    report.check(LINEAR_CHECK_NAMES[0], claimed["feasible"],
+                 enumeration["feasible"],
+                 detail=f"of {enumeration['patterns']:,} patterns, in "
+                        f"{enumeration['seconds']:.3f} s (the paper reports "
+                        f"{claimed['enumeration_seconds']} s on an M1 Pro; "
+                        f"wall time is not asserted)")
+    report.check(LINEAR_CHECK_NAMES[1], claimed["d_min"],
+                 enumeration["d_min"],
+                 detail="the smallest number of perturbable pixels any "
+                        "feasible assignment flips")
+
+    # -- what the two archived vectors actually flipped -----------------------
+    counts = linear_baseline.flip_counts(pickled)
+    for name, label, key in (
+            (LINEAR_CHECK_NAMES[2], "Digital Annealer", "fujitsu_flips"),
+            (LINEAR_CHECK_NAMES[3], "Gurobi", "gurobi_flips")):
+        entry = counts.get(label)
+        if entry is None:
+            report.outcome(UNAVAILABLE, name,
+                           f"no archived {label} vector next to the instance",
+                           f"re-extract with: tar xzf {HARDWARE_ARCHIVE}",
+                           claimed=claimed[key])
+            continue
+        report.check(name, claimed[key], entry["flips"],
+                     detail=f"of {len(form.taus)} perturbation variables, "
+                            f"against d_min = {enumeration['d_min']}; H_0 is "
+                            f"identically zero, so every feasible assignment "
+                            f"carries the same energy and nothing in the QUBO "
+                            f"prefers a smaller perturbation")
+
+    # -- Z3 -------------------------------------------------------------------
+    z3_module, z3_error = optional_import("z3")
+    if z3_module is None:
+        report_all(report, UNAVAILABLE, LINEAR_CHECK_NAMES[4:6],
+                   f"z3-solver is not installed ({z3_error!r})",
+                   "pip install -r requirements.txt",
+                   claimed=claimed["d_min"])
+    else:
+        witness = linear_baseline.solve_z3(form, minimize=False,
+                                           repeats=LINEAR_TIMING_REPEATS)
+        report.assertion(
+            LINEAR_CHECK_NAMES[4],
+            witness["assignment"] is not None
+            and linear_baseline.check_assignment(form, witness["assignment"]),
+            f"{witness['status']}, {witness.get('distance')} pixels, "
+            f"{witness['seconds']:.3f} s to encode and solve (the paper "
+            f"reports {claimed['z3_witness_seconds']} s); re-checked against "
+            f"the pickled constraint dictionaries, not the matrices")
+        minimum = linear_baseline.solve_z3(form, minimize=True,
+                                           repeats=LINEAR_TIMING_REPEATS)
+        report.check(LINEAR_CHECK_NAMES[5], claimed["d_min"],
+                     minimum.get("distance"),
+                     detail=f"{minimum['seconds']:.3f} s to encode and solve "
+                            f"(the paper reports "
+                            f"{claimed['z3_minimum_seconds']} s); agrees with "
+                            f"the enumeration above")
+
+    # -- Gurobi ---------------------------------------------------------------
+    if not with_gurobi:
+        report.outcome(SKIPPED, LINEAR_CHECK_NAMES[6],
+                       "solving the linear form with Gurobi needs a license",
+                       "--with-gurobi", claimed=claimed["d_min"])
+        return
+    gurobi, gurobi_error = optional_import("gurobipy")
+    if gurobi is None:
+        report.outcome(UNAVAILABLE, LINEAR_CHECK_NAMES[6],
+                       f"gurobipy is not installed ({gurobi_error!r})",
+                       "pip install gurobipy", claimed=claimed["d_min"])
+        return
+    try:
+        feasible = linear_baseline.solve_gurobi(
+            form, minimize=False, repeats=LINEAR_TIMING_REPEATS)
+        smallest = linear_baseline.solve_gurobi(
+            form, minimize=True, repeats=LINEAR_TIMING_REPEATS)
+    except Exception as error:
+        report.outcome(UNAVAILABLE, LINEAR_CHECK_NAMES[6],
+                       f"Gurobi could not solve the linear form ({error!r})",
+                       "check the license with: python -c 'import gurobipy; "
+                       "gurobipy.Model()'", claimed=claimed["d_min"])
+        return
+    report.check(LINEAR_CHECK_NAMES[6], claimed["d_min"], smallest["distance"],
+                 detail=f"{smallest['seconds']:.4f} s to build and solve, "
+                        f"{smallest['solver_seconds']:.4f} s of that inside "
+                        f"the solver")
+    print(f"{'':<20}note   : the paper reports {claimed['gurobi_seconds']} s "
+          f"for this solve and for the feasibility")
+    print(f"{'':<20}         solve, which took {feasible['seconds']:.4f} s "
+          f"here; against Table VII's "
+          f"{HARDWARE['gurobi_time']} s")
+    print(f"{'':<20}         on the QUBO form of the same instance. Wall time "
+          f"is machine dependent")
+    print(f"{'':<20}         and is not asserted, here or in Table VII.")
+
+
+# -----------------------------------------------------------------------------
+# Data availability
+# -----------------------------------------------------------------------------
+
+def extract_all(archive, destination="."):
+    """tarfile.extractall with the `data` filter wherever the runtime has one.
+
+    Python 3.12 deprecates the unfiltered form and 3.14 makes `data` the
+    default. All four archives in data/ were checked to extract identically
+    under that filter, so this is future-proofing rather than a change in
+    behaviour. Python 3.9, which requirements.txt targets, has no `filter`
+    keyword at all, hence the capability test.
+    """
+    if hasattr(tarfile, "data_filter"):
+        archive.extractall(destination, filter="data")
+    else:  # Python < 3.11.4
+        archive.extractall(destination)
+
+
+def ensure_archive(archive, marker, description, allow_extract):
+    """Unpack a data/ archive into the repository root if `marker` is absent."""
+    if os.path.exists(marker):
+        return True
+    if not (allow_extract and os.path.exists(archive)):
+        return False
+    print(f" [setup] {description} not extracted; unpacking {archive}")
+    with tarfile.open(archive, "r:gz") as handle:
+        extract_all(handle)
+    return os.path.exists(marker)
+
+
+def ensure_datasets(sizes, allow_extract):
+    """Extract data/datasets.tar.gz if a selected instance's Dataset/ is absent.
+
+    Kept separate from ensure_data() because the marker cannot be the 5x5 files:
+    those are tracked in the repository, so they are present in a bare clone and
+    would make this look satisfied when the other three are still packed. The
+    test is per selected instance instead.
+
+    This archive is much the largest of the four (313 MB expanded against 138),
+    and until it was unpacked here three of Table II's rows and three of the
+    structure group's rows could not run. --quick selects only the 5x5, whose
+    Dataset/ is tracked, so it still never unpacks this.
+    """
+    absent = [size for size in sizes if not os.path.exists(dataset_path(size))]
+    if not absent:
+        return True
+    if not (allow_extract and os.path.exists(DATASET_ARCHIVE)):
+        return False
+    print(f" [setup] the {', '.join(f'{s}x{s}' for s in absent)} training and "
+          f"test sets not extracted; unpacking {DATASET_ARCHIVE}")
+    print(f" [setup] into the repository root (Dataset/; ~313 MB expanded, "
+          f"git-ignored)")
+    with tarfile.open(DATASET_ARCHIVE, "r:gz") as archive:
+        extract_all(archive)
+    return all(os.path.exists(dataset_path(size)) for size in sizes)
+
+
+def ensure_data(sizes, allow_extract):
+    """Extract data/qubo_and_networks.tar.gz if the instance data is absent."""
+    absent = [size for size in sizes if not instance_available(size)]
+    if not absent:
+        return [], False
+
+    if allow_extract and os.path.exists(DATA_ARCHIVE):
+        print(f" [setup] {', '.join(f'{s}x{s}' for s in absent)} not "
+              f"extracted; unpacking {DATA_ARCHIVE}")
+        print(f" [setup] into the repository root "
+              f"(QUBO/ and TrainedNN/; ~138 MB expanded, git-ignored)")
+        with tarfile.open(DATA_ARCHIVE, "r:gz") as archive:
+            extract_all(archive)
+        absent = [size for size in sizes if not instance_available(size)]
+        print(" [setup] done."
+              if not absent else
+              " [setup] done, but some instances are still missing.")
+        return absent, True
+
+    return absent, False
+
+
+# -----------------------------------------------------------------------------
+# Entry point
+# -----------------------------------------------------------------------------
+
+def parse_arguments(argv):
+    parser = argparse.ArgumentParser(
+        prog="verify_paper.py",
+        description="Re-check the paper's reported numbers and print a "
+                    "pass/fail report.")
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--all", action="store_true",
+                           help="verify every instance (the default)")
+    selection.add_argument("--quick", action="store_true",
+                           help="verify the 5x5 instance only")
+    selection.add_argument("--instance", metavar="LIST",
+                           help="comma-separated subset of 5,7,11,28")
+    parser.add_argument("--with-gurobi", action="store_true",
+                        help="also run Gurobi (needs a license)")
+    parser.add_argument("--with-sa", action="store_true",
+                        help="also run simulated annealing (minutes to hours)")
+    parser.add_argument("--sa-seeds", type=int, default=3, metavar="N",
+                        help="SA seeds per instance (default 3)")
+    parser.add_argument("--with-fem", action="store_true",
+                        help="also replay the FEM solver (stochastic)")
+    parser.add_argument("--everything", action="store_true",
+                        help="shorthand for --with-gurobi --with-sa --with-fem")
+    parser.add_argument("--timeout", type=float, metavar="SECONDS",
+                        help="per-check wall-clock bound; exceeding it is "
+                             "TIMEOUT, not FAIL. 0 means no limit at all, "
+                             "including for the opt-in checks")
+    parser.add_argument("--json", metavar="PATH",
+                        help="write a machine-readable report ('-' for stdout)")
+    parser.add_argument("--no-extract", action="store_true",
+                        help="do not unpack anything from data/")
+    parser.add_argument("--verbose", action="store_true",
+                        help="show the full output of the sub-checks")
+    options = parser.parse_args(argv)
+
+    # Command-line errors go through parser.error(), which exits with
+    # argparse's own status 2. No verdict uses 2 for that reason.
+    if options.timeout is not None and options.timeout < 0:
+        parser.error("--timeout must be >= 0 (0 means no limit)")
+    if options.instance:
+        try:
+            requested = {int(token) for token in options.instance.split(",")
+                         if token.strip()}
+        except ValueError:
+            parser.error("--instance takes a comma-separated list of "
+                         "5, 7, 11, 28")
+        unknown = sorted(requested - set(PAPER))
+        if unknown:
+            parser.error(f"unknown instance(s): {unknown}; "
+                         f"choose from {ALL_SIZES}")
+        options.instance = [size for size in ALL_SIZES if size in requested]
+    return options
+
+
+def main(argv=None):
+    options = parse_arguments(sys.argv[1:] if argv is None else argv)
+
+    if options.quick:
+        sizes = [5]
+    elif options.instance:
+        sizes = list(options.instance)
+    else:
+        sizes = list(ALL_SIZES)
+
+    with_gurobi = options.with_gurobi or options.everything
+    with_sa = options.with_sa or options.everything
+    with_fem = options.with_fem or options.everything
+
+    # --timeout 0 reads as "no limit", and that is what it does: `unlimited` is
+    # carried as None everywhere below. Previously 0 produced a negative budget
+    # that the solvers rejected, which was recorded as FAIL -- the one thing a
+    # timeout must never become.
+    timeout = None if not options.timeout else options.timeout
+
+    # get_args.py parses sys.argv at import time, so hide our own flags.
+    sys.argv = [sys.argv[0]]
+
+    started = time.time()
+    deadline = Deadline(timeout)
+
+    report = Report(verbose=options.verbose)
+    report.banner("verify_paper.py -- reproducing the reported numerical "
+                  "results")
+    print(f" repository root : {os.getcwd()}")
+    print(f" instances       : {', '.join(f'{s}x{s}' for s in sizes)}")
+    print( " QUBO encoding   : strict argmax (args.argmax_tie_aware = False), "
+           "the encoding")
+    print( "                   used for every shipped QUBO and every reported "
+           "number")
+    extra = [name for name, on in (("--with-gurobi", with_gurobi),
+                                   ("--with-sa", with_sa),
+                                   ("--with-fem", with_fem)) if on]
+    extra_text = (", ".join(extra) if extra else
+                  "none (no license, no GPU, no network, no hardware needed)")
+    print(f" opt-in checks   : {extra_text}")
+    if options.timeout == 0:
+        print(" per-check limit : none (--timeout 0)")
+    elif timeout is not None:
+        print(f" per-check limit : {timeout:g} s (all checks)")
+    elif extra:
+        print(f" per-check limit : {OPT_IN_DEFAULT_TIMEOUT_SECONDS:g} s for the "
+              f"opt-in checks (default; set --timeout to change)")
+    if os.environ.get("BNN_ARGMAX_TIE_AWARE", "0").strip().lower() in (
+            "1", "true", "yes", "on"):
+        print(" NOTE            : BNN_ARGMAX_TIE_AWARE is set in the "
+              "environment; this script")
+        print("                   overrides it, because the reported numbers "
+              "use the strict encoding.")
+    print()
+
+    missing, extracted = ensure_data(sizes, not options.no_extract)
+    if missing:
+        print(f" NOTE            : no data for "
+              f"{', '.join(f'{s}x{s}' for s in missing)}; those instances are "
+              f"reported as UNAVAILABLE.")
+        if os.path.exists(DATA_ARCHIVE):
+            print(f"                   Unpack it with: tar xzf {DATA_ARCHIVE}")
+
+    datasets_available = ensure_datasets(sizes, not options.no_extract)
+    if not datasets_available:
+        print(f" NOTE            : the training sets are not unpacked; "
+              f"Table II's Total Train Data rows and the")
+        print(f"                   structure group's training-set cross-check "
+              f"are reported as SKIPPED.")
+        if os.path.exists(DATASET_ARCHIVE):
+            print(f"                   Unpack them with: "
+                  f"tar xzf {DATASET_ARCHIVE}")
+
+    gurobi_logs_available = ensure_archive(
+        GUROBI_LOG_ARCHIVE, GUROBI_LOG_PATTERN.format(size=5),
+        "the recorded Gurobi solver logs", not options.no_extract)
+    hardware_available = ensure_archive(
+        HARDWARE_ARCHIVE, HARDWARE_QUBO,
+        "the Table VII two-class hardware instance", not options.no_extract)
+
+    # What this run can attempt, fixed BEFORE any check runs, so that the
+    # expected-count self-check below is an independent statement rather than a
+    # description of whatever happened to be recorded.
+    resources = {
+        "fem_solutions": os.path.exists(FEM_SOLUTIONS_PATH),
+        "z3": optional_import("Z3")[0] is not None,
+        "dwave": optional_import("dwave.samplers")[0] is not None,
+        "gurobi_logs": {size: os.path.exists(GUROBI_LOG_PATTERN.format(
+            size=size)) for size in sizes},
+        "hardware": hardware_available,
+        "with_sa": with_sa,
+    }
+    expected = expected_check_counts(sizes, missing, resources)
+
+    check_table2(report, sizes, missing)
+    check_structure(report, sizes, missing)
+    check_fem_solutions(report, sizes, missing)
+    check_z3(report, sizes, missing, deadline)
+    check_minimum_distance(report, sizes, missing, deadline)
+    opt_in_deadline = Deadline(timeout if options.timeout is not None
+                               else OPT_IN_DEFAULT_TIMEOUT_SECONDS)
+    check_gurobi_logs(report, sizes, missing, gurobi_logs_available)
+    check_gurobi(report, sizes, missing, with_gurobi, opt_in_deadline)
+    check_sa(report, sizes, missing, with_sa, options.sa_seeds, opt_in_deadline)
+    check_fem_replay(report, sizes, missing, with_fem, opt_in_deadline)
+    check_hardware(report, hardware_available, deadline)
+    check_linear_baseline(report, hardware_available, with_gurobi,
+                          opt_in_deadline)
+
+    result, status_code = report.summary(time.time() - started, expected)
+
+    counts = report.tally()
+    if options.json:
+        payload = {
+            "instances": sizes,
+            "extracted_archive": extracted,
+            "missing_instances": missing,
+            "opt_in": {"gurobi": with_gurobi, "sa": with_sa, "fem": with_fem},
+            "counts": counts,
+            "expected_check_counts": expected,
+            "recorded_check_counts": report.group_counts(),
+            "result": result,
+            "exit_code": status_code,
+            "checks": report.entries,
+        }
+        text = json.dumps(payload, indent=2)
+        if options.json == "-":
+            print()
+            print(text)
+        else:
+            with open(options.json, "w", encoding="utf-8") as handle:
+                handle.write(text + "\n")
+            print(f" machine-readable report written to {options.json}")
+
+    return status_code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

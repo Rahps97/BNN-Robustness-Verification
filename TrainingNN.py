@@ -174,7 +174,7 @@ except FileExistsError:
 
 try:
     PATH = ResultFolder + f"{InputDatasize}.pth"
-    network.load_state_dict(torch.load(PATH))
+    network.load_state_dict(torch.load(PATH, map_location=device))
     network.eval()
 except FileNotFoundError:
     pass

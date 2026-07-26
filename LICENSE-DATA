@@ -1,0 +1,72 @@
+Creative Commons Attribution 4.0 International (CC BY 4.0)
+==========================================================
+
+Copyright (c) 2026 Rahul Singh, Seyran Saeedi, Zheng Zhang
+
+This licence covers the DATA in this repository, not the code. The code is
+under the MIT Licence; see LICENSE. Where a file could be read as either, the
+MIT Licence governs anything executable and this licence governs everything
+else.
+
+Covered by this licence
+-----------------------
+
+  Dataset/                         binarized, downsampled MNIST subsets
+  QUBO/                            QUBO matrices, variable maps, instance info
+  TrainedNN/                       trained BNN checkpoints
+  FEM_best_configurations.txt      recorded FEM solution vectors
+  FEM_HYPERPARAMETERS.md           recorded FEM hyperparameters
+  data/datasets.tar.gz             the four Dataset/ instances
+  data/qubo_and_networks.tar.gz    the four QUBO/ instances and checkpoints
+  data/gurobi_logs.tar.gz          recorded Gurobi solver logs
+  data/hardware_results.tar.gz     Fujitsu Digital Annealer and D-Wave samples
+
+Not covered by this licence
+---------------------------
+
+  Everything else in the repository, which is MIT (see LICENSE).
+
+  hardware/Verify.ipynb and hardware/SA_Verify.ipynb, which are inside
+  data/hardware_results.tar.gz but are code, and are therefore MIT.
+
+Full licence text
+-----------------
+
+  https://creativecommons.org/licenses/by/4.0/legalcode
+  Human-readable summary: https://creativecommons.org/licenses/by/4.0/
+
+Attribution
+-----------
+
+If you use these data, cite the paper and the archived software release; see
+CITATION.cff. A citation satisfies the attribution requirement.
+
+MNIST provenance, and the limits of this grant
+----------------------------------------------
+
+Everything under Dataset/ is derived from the MNIST handwritten digit database
+(LeCun, Cortes and Burges), by class selection, adaptive average-pool
+downsampling to 5x5, 7x7, 11x11 or 28x28, and binarization. The trained
+checkpoints and the QUBO matrices are in turn derived from those subsets. The
+original MNIST image files are not redistributed here.
+
+MNIST was never published under an explicit licence. Its original distribution
+point, http://yann.lecun.com/exdb/mnist/, carried no licence, no copyright
+notice and no terms of use at any point in its history, and as of January 2025
+it no longer serves the files at all. Licences asserted for MNIST by third-party
+redistributors conflict with one another -- CC BY-SA 3.0, MIT, CC0-1.0 and
+"unknown" are all in circulation -- and none of them is traceable to an
+authorisation by the dataset's authors.
+
+This licence is therefore a grant of whatever rights the authors of this
+repository hold in the derived artefacts listed above. It is not, and cannot be,
+a grant of rights in MNIST itself, and nothing here should be read as a
+representation that MNIST carried licensing terms that these artefacts inherit
+or comply with. Users who need certainty about the underlying images should go
+to NIST Special Database 19, from which MNIST was built, or to QMNIST
+(https://github.com/facebookresearch/qmnist), which regenerates MNIST from
+SD19 and is released under a BSD licence.
+
+Cite MNIST as: Y. LeCun, L. Bottou, Y. Bengio and P. Haffner, "Gradient-based
+learning applied to document recognition", Proceedings of the IEEE 86(11):
+2278-2324, 1998. https://doi.org/10.1109/5.726791

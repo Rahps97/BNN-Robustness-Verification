@@ -1,0 +1,58 @@
+{
+  "upload_type": "software",
+  "title": "BNN-Robustness-Verification: code and data for \"Robustness Verification of Binary Neural Networks: An Ising and Quantum-Inspired Framework\"",
+  "description": "<p>Code and data accompanying the paper <em>Robustness Verification of Binary Neural Networks: An Ising and Quantum-Inspired Framework</em> by Rahul Singh, Seyran Saeedi and Zheng Zhang (preprint: <a href=\"https://arxiv.org/abs/2602.13536\">arXiv:2602.13536</a>).</p><p>The repository implements an end-to-end pipeline that maps the robustness verification of a binary neural network (BNN) to a Quadratic Constrained Boolean Optimization (QCBO) problem and then to a Quadratic Unconstrained Binary Optimization (QUBO) instance, so that the verification query can be attacked with conventional solvers as well as with Ising-style, annealing and quantum-inspired hardware.</p><p>Contents:</p><ul><li>QUBO construction for MNIST BNNs at four input sizes (5x5, 7x7, 11x11, 28x28): <code>bnn_as_qubo.py</code>, <code>QUBOCreator.py</code>.</li><li>Binarized dataset preparation and BNN training: <code>DatasetCreation.py</code>, <code>prepare_dataset.py</code>, <code>TrainingNN.py</code>.</li><li>Solvers and baselines: simulated annealing (<code>SA.py</code>, <code>SA_repeated.py</code>), the Free Energy Machine (<code>FEM.py</code>), Gurobi (<code>Gurobi.py</code>, <code>run_gurobi_all.py</code>) and an exact Z3/SMT baseline (<code>Z3.py</code>).</li><li>Independent replay of any claimed counterexample through a NumPy forward pass of the BNN: <code>verify_counterexamples.py</code>.</li><li><code>verify_paper.py</code>, a single command that rebuilds each QUBO with the same construction code and re-checks those entries of Tables II to VII, and of the Section IV-B claims made in prose, that can be recomputed from the shipped files, reporting the rest as unavailable rather than passing over them, and exiting non-zero if any check fails. It needs no GPU, no solver licence, no network access and no annealing hardware, and takes well under a minute.</li><li><code>data/</code>: the four QUBO instances and their trained checkpoints, the recorded Gurobi solver logs, and the Gurobi, Fujitsu Digital Annealer and D-Wave solution vectors behind Table VII, together with the authors' own verification notebooks, so that every row of that table can be re-evaluated without a solver licence and without access to the hardware.</li></ul><p>The original MNIST image files are not redistributed here; the dataset-preparation scripts fetch them. What <code>data/datasets.tar.gz</code> contains is the binarized, downsampled subsets derived from them.</p><p>Licensing: the code is under the MIT Licence and the data are under CC BY 4.0. Zenodo's record-level licence field takes a single value and is set to MIT, since the deposit is predominantly software; the split is stated in <code>LICENSE</code>, <code>LICENSE-DATA</code> and the README, and those files govern. Two functions are derived from Apache-2.0 projects (D-Wave's <code>dwave-neal</code> and <code>qubovert</code>) and remain under Apache-2.0; <code>NOTICE</code> records the required attributions.</p><p>Funding: U.S. National Science Foundation grant 2311295 and U.S. Department of Energy grant DE-SC0021323.</p>",
+  "creators": [
+    {
+      "name": "Singh, Rahul",
+      "affiliation": "University of California, Santa Barbara"
+    },
+    {
+      "name": "Saeedi, Seyran",
+      "affiliation": "Independent researcher; work performed at University of California, Santa Barbara",
+      "orcid": "0000-0003-1646-3870"
+    },
+    {
+      "name": "Zhang, Zheng",
+      "affiliation": "University of California, Santa Barbara",
+      "orcid": "0000-0002-2292-0030"
+    }
+  ],
+  "access_right": "open",
+  "license": "MIT",
+  "language": "eng",
+  "keywords": [
+    "binary neural networks",
+    "robustness verification",
+    "adversarial robustness",
+    "formal verification",
+    "QUBO",
+    "Ising model",
+    "quantum-inspired computing",
+    "quantum annealing",
+    "digital annealer",
+    "simulated annealing",
+    "Free Energy Machine",
+    "SMT solving",
+    "trustworthy AI",
+    "MNIST"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "10.48550/arXiv.2602.13536",
+      "relation": "isSupplementTo",
+      "resource_type": "publication-preprint"
+    },
+    {
+      "identifier": "https://github.com/Rahps97/BNN-Robustness-Verification",
+      "relation": "isSupplementTo",
+      "resource_type": "software"
+    }
+  ],
+  "grants": [
+    {
+      "id": "10.13039/100000001::2311295"
+    }
+  ],
+  "notes": "<p>Provenance: a frozen pre-reproducibility state of this fork is recorded as the annotated git tag <code>paper-results-v1</code> (commit 47b877e), which is an ancestor of the state archived here and which reproduces the reported FEM energies and every row of Table V. It is not the upstream state as the authors left it, which is commit 1110598. The sixteen commits between them are CPU-compatibility fixes (<code>map_location</code> on checkpoint loading in <code>QUBOCreator.py</code> and <code>TrainingNN.py</code>, a CPU fallback in <code>FEM.py</code>), a stale unused copy of the perturbation-bound constant in <code>SA.py</code> brought from 3 into line with the live value, and the addition of the Z3 baseline and the counterexample checker. None of these alters a reported number. The perturbation bound in particular is dead code in <code>SA.py</code>, which defines it and never reads it; the value that reaches the encoding comes from <code>QUBOCreator.py</code>, where it was already 8 in the upstream state, and the shipped instances and reported tables use 8 throughout. The commits made after that tag change the Free Energy Machine hyperparameter search (per-worker parameter isolation, and a lower bound on multiplicative candidate generation), add an opt-in tie-aware encoding to the QUBO builder, add the <code>data/</code> archives, and add <code>verify_paper.py</code>; per the repository's own documentation they change no reported number, and the recorded FEM solution vectors recompute to the reported energies at either state. The later state is the one archived here because it is the one that carries the shipped data, <code>verify_paper.py</code>, and the <code>LICENSE-DATA</code> and <code>NOTICE</code> files. It reproduces the reported numbers on a stock CPU-only Python environment.</p><p>The U.S. Department of Energy award DE-SC0021323 is not present in Zenodo's award vocabulary and therefore cannot be expressed in the machine-readable funding field; it is recorded here and in the description instead.</p>"
+}

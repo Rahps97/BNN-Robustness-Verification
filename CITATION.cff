@@ -1,0 +1,102 @@
+# Citation metadata for this repository (Citation File Format 1.2.0).
+# GitHub renders this as the "Cite this repository" panel.
+#
+# TODO after the Zenodo DOI is minted: uncomment the `identifiers:` block below
+# and fill in the concept DOI.
+cff-version: 1.2.0
+message: >-
+  If you use this software, please cite both the archived software release (via
+  its Zenodo DOI) and the accompanying paper.
+title: >-
+  BNN-Robustness-Verification: code and data for "Robustness Verification of
+  Binary Neural Networks: An Ising and Quantum-Inspired Framework"
+abstract: >-
+  An end-to-end pipeline that maps the robustness verification of a binary
+  neural network (BNN) to a Quadratic Constrained Boolean Optimization (QCBO)
+  problem and then to a Quadratic Unconstrained Binary Optimization (QUBO)
+  instance, so that the verification query can be attacked with conventional
+  solvers as well as with Ising-style, annealing and quantum-inspired hardware.
+  The repository contains the QUBO construction, BNN training and binarized
+  dataset preparation, simulated-annealing, Free Energy Machine, Gurobi and
+  Z3/SMT solvers, independent counterexample checking, and verify_paper.py, a
+  single command that re-checks those entries of Tables II to VII of the paper,
+  and of the Section IV-B claims made in prose, that can be recomputed from the
+  shipped files.
+type: software
+authors:
+  - family-names: Singh
+    given-names: Rahul
+    affiliation: University of California, Santa Barbara
+  - family-names: Saeedi
+    given-names: Seyran
+    affiliation: >-
+      Independent researcher; work performed at University of California, Santa
+      Barbara
+    orcid: https://orcid.org/0000-0003-1646-3870
+  - family-names: Zhang
+    given-names: Zheng
+    affiliation: University of California, Santa Barbara
+    orcid: https://orcid.org/0000-0002-2292-0030
+    email: zhengzhang@ece.ucsb.edu
+contact:
+  - family-names: Zhang
+    given-names: Zheng
+    affiliation: University of California, Santa Barbara
+    orcid: https://orcid.org/0000-0002-2292-0030
+    email: zhengzhang@ece.ucsb.edu
+repository-code: https://github.com/Rahps97/BNN-Robustness-Verification
+# CFF has no per-file licensing, so both identifiers are listed. They are not
+# alternatives: MIT covers the code (LICENSE) and CC-BY-4.0 covers the shipped
+# datasets, QUBO instances, checkpoints and recorded solver output
+# (LICENSE-DATA). Two functions are Apache-2.0 derived; see NOTICE.
+license:
+  - MIT
+  - CC-BY-4.0
+keywords:
+  - binary neural networks
+  - robustness verification
+  - adversarial robustness
+  - formal verification
+  - QUBO
+  - Ising model
+  - quantum-inspired computing
+  - quantum annealing
+  - digital annealer
+  - simulated annealing
+  - Free Energy Machine
+  - SMT solving
+  - trustworthy AI
+  - MNIST
+# identifiers:
+#   - type: doi
+#     value: 10.5281/zenodo.XXXXXXX
+#     description: >-
+#       Concept DOI: always resolves to the latest archived release of this
+#       repository.
+preferred-citation:
+  type: article
+  title: >-
+    Robustness Verification of Binary Neural Networks: An Ising and
+    Quantum-Inspired Framework
+  authors:
+    - family-names: Singh
+      given-names: Rahul
+      affiliation: University of California, Santa Barbara
+    - family-names: Saeedi
+      given-names: Seyran
+      affiliation: >-
+        Independent researcher; work performed at University of California,
+        Santa Barbara
+      orcid: https://orcid.org/0000-0003-1646-3870
+    - family-names: Zhang
+      given-names: Zheng
+      affiliation: University of California, Santa Barbara
+      orcid: https://orcid.org/0000-0002-2292-0030
+  year: 2026
+  month: 2
+  doi: 10.48550/arXiv.2602.13536
+  url: https://arxiv.org/abs/2602.13536
+  notes: >-
+    Preprint (arXiv:2602.13536). Under revision at npj Unconventional
+    Computing; replace this entry with the journal article once it is
+    published.
