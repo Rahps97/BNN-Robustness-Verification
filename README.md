@@ -42,6 +42,10 @@ Note that `E_off` is an **energy**, not a constraint count. Earlier versions of 
                    used for every shipped QUBO and every reported number
  opt-in checks   : none (no license, no GPU, no network, no hardware needed)
 
+ [setup] 7x7, 11x11, 28x28 not extracted; unpacking data/qubo_and_networks.tar.gz
+ [setup] into the repository root (QUBO/ and TrainedNN/; ~138 MB expanded, git-ignored)
+ [setup] done.
+
 -------------------------------------------------------------------------------
  Tables III, IV, VI -- QUBO structure (variables / constraints / energy offset)
 -------------------------------------------------------------------------------
@@ -62,7 +66,7 @@ Note that `E_off` is an **energy**, not a constraint count. Earlier versions of 
 ===============================================================================
  SUMMARY
 ===============================================================================
- Tables III/IV/VI  QUBO structure                   36 passed
+ Tables III/IV/VI  QUBO structure                   33 passed, 3 not run
  Table IV          FEM energies + reverse check     12 passed
  Table V           Z3 SMT baseline                  8 passed
  Table V           minimum adversarial distance     8 passed
@@ -71,11 +75,16 @@ Note that `E_off` is an **energy**, not a constraint count. Earlier versions of 
  Table IV          FEM solver replay                4 not run
  Table VII         hardware results                 3 not verifiable
 
- 64 passed, 0 failed, 12 not run (--with-fem, --with-gurobi, --with-sa), 3 not verifiable (hardware access required)
+ 61 passed, 0 failed, 15 not run (--with-fem, --with-gurobi, --with-sa), 3 not verifiable (hardware access required)
+ elapsed: 22.7 s
 
  RESULT: PASS -- every check that was run reproduces the paper.
+         18 check(s) were NOT run and are therefore NOT verified; see the
+         reasons above. Do not read them as confirmed.
 ===============================================================================
 ```
+
+(The three structural rows shown as *not run* are the optional cross-check that the training set re-selects the same instance; it needs `data/datasets.tar.gz` unpacked as well. With both archives extracted the run is 64 passed, 0 failed.)
 
 ### Outcomes
 
@@ -488,6 +497,8 @@ It runs two checks, selectable as `python verify_counterexamples.py check` and `
 * **`bruteforce`** enumerates perturbations by increasing Hamming distance and reports the first distance at which the label changes. This is the exact minimum adversarial distance by construction, independent of Z3 and of any encoding. Distance levels larger than `MAX_COMBINATIONS_PER_LEVEL` are skipped and the script states how far the exhaustive proof reaches.
 
 Set `InputSize` the same way as in `Z3.py`. On the four shipped instances every Table V witness passes reverse-verification, and brute force confirms minimum adversarial distances of 3, 1, 2 and 2 for 5x5, 7x7, 11x11 and 28x28 respectively.
+
+To run all of this at once for every instance, without editing `InputSize` anywhere, use `python verify_paper.py` — see *Verifying the reported results* at the top of this file.
 
 ## Repeated Simulated-Annealing Stability Evaluation
 
