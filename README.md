@@ -132,6 +132,61 @@ python FEM.py
 
 This script solves the generated QUBO using the Free-Energy Machine solver.
 
+##### The reported FEM results, and how to check them
+
+The FEM energies reported in the paper were produced by the code at the annotated
+tag `paper-results-v1`. To obtain exactly that version:
+
+```bash
+git checkout paper-results-v1
+```
+
+Commits after that tag change how `FEM.py` searches (see *Solver changes made after
+`paper-results-v1`* below). They are forward-looking robustness fixes; they correct
+nothing in the paper and change no reported number.
+
+FEM's coordinate search is **stochastic**. It draws Sobol-scrambled seeds, sweeps
+one hyperparameter at a time, and carries the winning value into the next round, so
+two runs from the same starting point explore different trajectories. The recorded
+values in `FEM_best_configurations.txt` and `FEM_HYPERPARAMETERS.md` are the state
+of that search at the moment each best energy was recorded — a record of what was
+run, not a recipe that replays to the same number.
+
+They are therefore provided so the reported energies can be **verified rather than
+replayed**. Each entry in `FEM_best_configurations.txt` includes the full solution
+vector, so the reported energy can be recomputed directly against the shipped QUBO
+matrix, and the perturbation it encodes can be checked against the original network
+with `verify_counterexamples.py`. That is a stronger check than a rerun: it confirms
+the solution exists and has the claimed energy, independently of which search
+trajectory found it.
+
+##### Solver changes made after `paper-results-v1`
+
+Two defects in the hyperparameter search were fixed after the reported runs. Neither
+invalidates a published result — the reported solution vectors verify against the
+QUBO matrices regardless of how the search reached them — and neither is a
+correction to the paper.
+
+* **Worker parameter state was shared.** The multi-device launcher passed each
+  worker a shallow copy of the parameter dictionary, so parallel workers mutated the
+  same inner objects. The hyperparameters recorded next to a best energy were
+  therefore not guaranteed to be the set that produced it. Workers now receive a
+  deep copy.
+* **Candidate generation could ratchet parameters to zero.** Candidates are
+  generated multiplicatively, as `value * [down_limit, up_limit]` with
+  `down_limit = 0.5`, and the winner is written back each round. Zero is an
+  absorbing state under that rule: a value can be halved indefinitely but cannot
+  recover once it reaches a denormal. Runs were observed with `Tmax` drifting from
+  445.79 to ~1e-44, and the 11x11 and 28x28 records show `wd`, `mom` and `Tmin` at
+  5.605193857299268e-45, the smallest positive float32 denormal. Every parameter now
+  gets a relative lower bound of `initial_value * 1e-6`, tunable through the
+  `FEM_PARAM_FLOOR_RATIO` environment variable (`0` restores the old behaviour).
+
+  Note that this collapse was **not** fatal to the search: the 28x28 run reached the
+  global optimum with collapsed temperatures, and imposing a floor on 5x5 did not
+  improve on the reported energy. The floor is a robustness improvement, not an
+  explanation of any result.
+
 #### Gurobi Solver
 
 ```bash
@@ -244,6 +299,7 @@ All parameters are plain module-level constants; there is no configuration file.
 | Repeated-SA settings | `SA_repeated.py` | `NUM_REPETITIONS`, `SEEDS`, `NUM_READS`, `NUM_SWEEPS`, `BETA_SCHEDULE_TYPE` |
 | FEM search budget | `FEM.py` | `total_rounds`, `search_precision`, `N_step`, `batch` (inside `__main__`) |
 | FEM optimizer / annealing mode | `FEM.py` | `optimizer`, `betamode` |
+| FEM hyperparameter lower bound | `FEM.py` | `FEM_PARAM_FLOOR_RATIO` environment variable (default `1e-6`, `0` disables), or a per-parameter `min_val` in `params_dic` |
 | Z3 query type (Table V vs. distance scan) | `Z3.py` | `RUN_MODE` (`"single"` / `"scan"`) |
 | Z3 solver timeout | `Z3.py` | `TIMEOUT_SECONDS` |
 | Z3 epsilon, overriding `Info.txt` | `Z3.py` | `SINGLE_EPSILON_OVERRIDE` |

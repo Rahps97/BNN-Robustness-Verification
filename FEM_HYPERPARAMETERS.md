@@ -15,3 +15,15 @@ without rerunning the solver.
 FEM's coordinate search is stochastic and these values are the state of that
 search when the best energy was recorded, so they document what was run rather
 than guaranteeing a bit-identical replay.
+
+These runs were made with the code at the annotated tag `paper-results-v1`
+(`git checkout paper-results-v1`). Later commits change how `FEM.py` generates
+hyperparameter candidates and how parallel workers hold parameter state; see the
+README section "The reported FEM results, and how to check them". Those changes
+alter no reported number.
+
+The 5.605193857299268e-45 entries above are the smallest positive float32
+denormal. They are the signature of the multiplicative candidate rule ratcheting
+a parameter downwards round after round, which later commits bound with a
+relative floor. It did not prevent the search from succeeding: the 28x28 run
+found the global optimum with its temperatures in that state.
