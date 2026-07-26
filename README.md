@@ -744,7 +744,7 @@ If you use this code, please cite the paper and the archived software release.
 
 **Software.** `CITATION.cff` in the repository root carries the machine-readable citation metadata; GitHub renders it as the *Cite this repository* panel in the sidebar, with ready-made APA and BibTeX exports.
 
-The archival DOI has not been minted yet. [`docs/ZENODO.md`](docs/ZENODO.md) is the checklist for doing it: which commit to archive, how to cut the release that mints the DOI, and where the resulting identifier has to be recorded. `.zenodo.json` holds the metadata Zenodo will read when the release is archived.
+The archival DOI has not been minted yet. `.zenodo.json` and `CITATION.cff` hold the metadata Zenodo reads when a GitHub release is archived; cutting a release on this repository mints the DOI automatically. The DOI then belongs in the paper's Data Availability statement and in its reference list.
 
 ## Licence and reuse
 

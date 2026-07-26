@@ -2,7 +2,7 @@
 # GitHub renders this as the "Cite this repository" panel.
 #
 # TODO after the Zenodo DOI is minted: uncomment the `identifiers:` block below
-# and fill in the concept DOI. See docs/ZENODO.md.
+# and fill in the concept DOI.
 cff-version: 1.2.0
 message: >-
   If you use this software, please cite both the archived software release (via
