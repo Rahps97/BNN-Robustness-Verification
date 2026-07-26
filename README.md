@@ -19,7 +19,7 @@ The reproducibility work described here lives on the `fix/reproducibility-and-cp
 git clone -b fix/reproducibility-and-cpu-support https://github.com/seyrans/BNN-Robustness-Verification.git && cd BNN-Robustness-Verification
 ```
 
-That is the whole procedure. It runs **102 checks** over **all four instances** (5x5, 7x7, 11x11, 28x28), takes **well under a minute** (about 35 s on a first run, under 20 s afterwards once the archives are unpacked), and needs **no GPU, no solver license, no network access and no annealing hardware**. Every check prints its own pass/fail line, and the script exits non-zero if any reported number fails to reproduce.
+That is the whole procedure. It runs **102 checks** over **all four instances** (5x5, 7x7, 11x11, 28x28), takes **about 20 to 25 seconds** once the archives are unpacked, and needs **no GPU, no solver license, no network access and no annealing hardware**. Every check prints its own pass/fail line, and the script exits non-zero if any reported number fails to reproduce.
 
 **Tables III to VII are covered, with two exceptions noted below.** That includes the hardware rows of Table VII: the two-class instance, both hardware samples and the recorded Gurobi solver logs ship alongside the QUBOs, so a reviewer can re-evaluate them without any hardware or license.
 
@@ -29,7 +29,7 @@ That is the whole procedure. It runs **102 checks** over **all four instances** 
 
 **Table VII's SA row is checked by re-running the solver, not by re-evaluating a stored vector.** No SA vector was archived either, but on this 113-variable instance simulated annealing is cheap, so `verify_paper.py` simply runs it as part of the default run: `dwave-samplers`' `SimulatedAnnealingSampler` at `num_reads = 1000`, up to three seeds, stopping at the first that reaches the target. It reaches the target energy of **-874,674** with **all 65 encoded constraints satisfied**, in about **2.3 s** per seed. Being a stochastic solver, reaching the target is `PASS` and falling short would be `INCONCLUSIVE`, never `FAIL`. For reference, the authors' own stored notebook output records 3.90 s and Table VII reports 3.559 s — the same result on three different machines.
 
-Everything needed ships compressed in `data/` (5.8 MB in total), and `verify_paper.py` unpacks what it needs on the first run and says so. The 5x5 QUBO and checkpoint are tracked in the repository directly, so `python verify_paper.py --quick` runs on a bare clone without unpacking the QUBO archive, which is 0.54 MB compressed and expands to 137 MB; it still unpacks the two small archives (0.2 MB together) that the Gurobi-log and Table VII checks read.
+Everything needed ships compressed in `data/` (5.8 MB in total), and `verify_paper.py` unpacks what it needs on the first run and says so. That first run is therefore slower than the figure above, because it also writes out about 137 MB of dense text; how much slower depends on the disk and on what else the machine is doing, and measurements from 35 s to just under two minutes have been seen. Every run afterwards reuses the extracted files. The script reports its own elapsed time on the last line. The 5x5 QUBO and checkpoint are tracked in the repository directly, so `python verify_paper.py --quick` runs on a bare clone without unpacking the QUBO archive, which is 0.54 MB compressed and expands to 137 MB; it still unpacks the two small archives (0.2 MB together) that the Gurobi-log and Table VII checks read.
 
 ### What it checks
 
@@ -139,7 +139,7 @@ A check is never silently omitted. Every row carries one of:
 
 | Flag | Effect | Cost and requirements |
 | --- | --- | --- |
-| *(none)*, or `--all` | all four instances, everything that needs nothing external | 102 checks in about 35 s cold, under 20 s warm, CPU only |
+| *(none)*, or `--all` | all four instances, everything that needs nothing external | 102 checks in about 20-25 s once unpacked, CPU only |
 | `--quick` | 5x5 only, plus the Table VII rows, which are instance-independent | 39 checks in ~4 s; runs on a bare clone, unpacking only the two small archives (0.2 MB) rather than the 0.54 MB QUBO archive that expands to 137 MB |
 | `--instance 5,7` | a chosen subset | — |
 | `--with-gurobi` | re-solve the Table IV Gurobi column from scratch, instead of reading the recorded logs | needs a Gurobi license; hours. The common size-limited license caps at 2,000 variables, so 28x28 (2,235) is reported `UNAVAILABLE`, not `FAIL` |
