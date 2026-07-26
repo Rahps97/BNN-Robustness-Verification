@@ -3,6 +3,13 @@ __pycache__/
 *.pyc
 *.pyo
 
+# The virtual environment the README's quick start creates in the repository
+# root. Without this a reviewer who follows those instructions verbatim gets an
+# untracked .venv/ in git status straight after a clean run.
+.venv/
+venv/
+.env/
+
 # Logs (including solver logs such as gurobi.log)
 *.log
 
