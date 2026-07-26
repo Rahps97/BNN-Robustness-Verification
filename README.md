@@ -722,3 +722,33 @@ If you use this code, please cite the paper and the archived software release.
 **Software.** `CITATION.cff` in the repository root carries the machine-readable citation metadata; GitHub renders it as the *Cite this repository* panel in the sidebar, with ready-made APA and BibTeX exports.
 
 The archival DOI has not been minted yet. [`docs/ZENODO.md`](docs/ZENODO.md) is the checklist for doing it: which commit to archive, how to cut the release that mints the DOI, and where the resulting identifier has to be recorded. `.zenodo.json` holds the metadata Zenodo will read when the release is archived.
+
+## Licence and reuse
+
+| What | Licence | File |
+| --- | --- | --- |
+| Code | MIT | [`LICENSE`](LICENSE) |
+| Data | CC BY 4.0 | [`LICENSE-DATA`](LICENSE-DATA) |
+| Two Apache-2.0 derived functions | Apache-2.0 | [`NOTICE`](NOTICE) |
+
+"Data" means `Dataset/`, `QUBO/`, `TrainedNN/`, `FEM_best_configurations.txt`, `FEM_HYPERPARAMETERS.md` and the four archives in `data/` — the binarized MNIST subsets, the QUBO instances, the trained checkpoints, the recorded Gurobi logs and the Fujitsu and D-Wave samples. Everything executable is MIT, including the two notebooks that ship inside `data/hardware_results.tar.gz`.
+
+Two licences rather than one because MIT is written for software and reads badly over a directory of `.txt` matrices, and because the conventional split for a code-plus-data release is a permissive software licence next to a Creative Commons data licence. Creative Commons itself recommends against putting CC licences on code, and Springer Nature's own licence chooser offers exactly this pairing. Neither licence is more restrictive than the other in practice: both permit commercial use, modification and redistribution, and both ask only for attribution.
+
+**Attribution is satisfied by citing the paper and the archived release** — see [Citing this work](#citing-this-work) and `CITATION.cff`. You do not need to do anything else.
+
+### MNIST
+
+Everything under `Dataset/` is derived from MNIST by class selection, adaptive average-pool downsampling and binarization; the checkpoints and QUBO matrices are derived in turn from those subsets. The original MNIST image files are not redistributed here.
+
+MNIST was never released under an explicit licence. Its original distribution point carried no licence, no copyright notice and no terms of use, and since January 2025 it no longer serves the files at all. The licences asserted for MNIST by third-party mirrors — CC BY-SA 3.0, MIT, CC0-1.0, "unknown" — conflict with each other and none traces back to the dataset's authors. The CC BY 4.0 grant here is over this repository's derived artefacts only; it makes no claim about MNIST itself, and nothing in it should be read as asserting that MNIST had terms these files inherit. `LICENSE-DATA` says this at length, and points at NIST Special Database 19 and at QMNIST for anyone who needs a clean chain of title to the underlying images.
+
+### Dependencies
+
+Every runtime dependency is permissively licensed and none constrains this repository: Apache-2.0 (`qubovert`, `dimod`, `dwave-samplers` and the rest of Ocean), BSD-3-Clause (`torch`, `torchvision`, `numpy`, `scipy`, `scikit-learn`), MIT (`z3-solver`), MPL-2.0 (`tqdm`, used unmodified, and MPL-2.0 is file-level copyleft that does not reach a larger work) and matplotlib's PSF-style licence. `gurobipy` is a proprietary client, is not redistributed here, and is not needed to reproduce any reported number.
+
+### The Free Energy Machine implementation
+
+`FEM.py` is an **independent reimplementation** of the Free Energy Machine of Shen et al., *Nature Computational Science* **5**, 322–332 (2025), [doi:10.1038/s43588-025-00782-0](https://doi.org/10.1038/s43588-025-00782-0). It was written from the method as published, is batched over hyperparameter candidates in a way the reference implementation is not, and shares no source with the authors' released code at [`Fanerst/FEM`](https://github.com/Fanerst/FEM) — a line-level comparison against that repository finds no run of three or more matching non-comment lines. This is worth stating because `Fanerst/FEM` carries no licence file at all and is therefore all-rights-reserved by default; the Zenodo snapshot of it ([10.5281/zenodo.14874189](https://doi.org/10.5281/zenodo.14874189)) is CC BY 4.0. Neither applies here, since nothing was copied, but please cite Shen et al. for the method.
+
+The one exception is `beta_range()` in `FEM.py`, which *is* third-party — see [`NOTICE`](NOTICE).

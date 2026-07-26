@@ -17,7 +17,7 @@ authenticated by the preparation work.
 | Decision | Recommendation | Why it cannot wait |
 | --- | --- | --- |
 | **Which commit gets the DOI** | the merged `main` after PR #1, released as `v1.0.0` — see [§4](#4-which-version-to-archive) | the archive is immutable once published |
-| **Is the licence really MIT?** | confirm with all three authors *before* publishing | `LICENSE` is inside the archive; changing it later needs a whole new version |
+| **Is the licence really MIT?** | yes for the code, plus CC BY 4.0 for the data — reviewed, see [§6](#6-the-licence-review) | `LICENSE` is inside the archive; changing it later needs a whole new version |
 | **Who publishes** | the upstream owner (`Rahps97`) — see [§1](#1-the-github-release-route-preferred) | a fork's release would archive the fork, not the canonical repository |
 
 The `LICENSE` file currently says MIT with copyright "2026 Rahul Singh, Seyran Saeedi,
@@ -317,3 +317,217 @@ at the first mention of the implementation.
 
 3. Both changes are metadata-only; they can go into a follow-up commit after the release
    without re-cutting it.
+
+---
+
+## 6. The licence review
+
+> **This is a documentation note, not legal advice.** It records what was checked and
+> what the sources say. Three points in it are genuine legal questions rather than
+> documentation ones, and they are marked **[LEGAL]**. Those should go to UCSB's Office
+> of Technology & Industry Alliances or to counsel, not be settled by reading this file.
+
+`LICENSE` was originally added during the reproducibility work as a placeholder rather
+than on the authors' instruction, so §0 above told you to settle it before publishing.
+It has now been reviewed. The outcome:
+
+**Keep MIT for the code. Add CC BY 4.0 for the data. Add a `NOTICE` file.**
+
+`LICENSE` is unchanged. `LICENSE-DATA` and `NOTICE` are new. `CITATION.cff` lists both
+SPDX identifiers, `.zenodo.json` keeps `"license": "MIT"` (the legacy field takes one
+value and the deposit is predominantly software) and states the split in its
+description, and the README carries a *Licence and reuse* section.
+
+### 6.1 Why MIT is right for the code
+
+**Nothing in the dependency graph constrains it.** Every runtime dependency is
+permissive: Apache-2.0 (`qubovert`, `dimod`, `dwave-samplers` and the rest of Ocean),
+BSD-3-Clause (`torch`, `torchvision`, `numpy`, `scipy`, `scikit-learn`), MIT
+(`z3-solver`), MPL-2.0 (`tqdm`) and matplotlib's PSF-style licence. No GPL, LGPL or
+AGPL anywhere. The one weak-copyleft item, `tqdm`, is MPL-2.0, which is *file-level*
+copyleft: §3.2 bites only on MPL files you modify and redistribute, and §3.3 expressly
+permits combining unmodified MPL files into a larger work under other terms. `tqdm` is
+used unmodified and is not redistributed here.
+
+One historical worry was checked and is closed: D-Wave's proprietary end-user licence
+does *not* cover any Ocean package on PyPI. It applies to `dwave-inspectorapp`, a
+closed-source visualisation bundle distributed off-PyPI behind an opt-in
+`dwave install inspector`. Nothing here installs it.
+
+**`gurobipy` does not bear on the code licence.** Its EULA is a contract between Gurobi
+and whoever installs and runs the package; it is not a copyright licence that propagates
+to source which calls the API. The repository ships an `import gurobipy` and nothing of
+Gurobi's, and `verify_paper.py` reproduces the Gurobi column from the recorded logs
+without the package at all. Two hygiene points that do follow from it: never commit a
+`gurobi.lic`, a licence key or the wheel; and note that a reviewer who simply
+`pip install gurobipy`s gets the size-limited evaluation licence (~2,000 variables),
+under which the 28x28 instance at 2,235 variables will not run — the README already says
+this.
+
+**`FEM.py` is not derived from anyone's released code.** This was the item most likely to
+cause a problem, and it does not. The Free Energy Machine of Shen et al. (*Nature
+Computational Science* **5**, 322–332, 2025, doi:10.1038/s43588-025-00782-0) does have a
+released implementation, at `github.com/Fanerst/FEM`, archived at
+doi:10.5281/zenodo.14874189. `FEM.py` was compared against all of `FEM/*.py` in that
+repository line by line, ignoring blank lines and comments: **zero runs of three or more
+matching lines**, and exactly one shared non-trivial line, `warnings.filterwarnings('ignore')`.
+The two agree on the mathematics and on some option names (`rmsprop`/`adam`, `h_factor`,
+the `inv`/`exp` annealing modes) because they implement the same published method;
+`FEM.py` is batched over hyperparameter candidates with its own chunking and hash-based
+RNG, which the reference is not.
+
+That independence matters more than it might sound, because **`Fanerst/FEM` has no
+licence file at all** — verified against the GitHub API (`license: null`, `/license`
+returns 404) and the full recursive tree. A GitHub repository with no licence is
+all-rights-reserved by default. The Zenodo snapshot of the same commit *is* CC BY 4.0,
+but that grant lives only in the record metadata; the zip contains no licence file
+either. Since nothing was copied, neither position binds this repository. Algorithms and
+mathematics are not copyrightable; only expression is. The README now states the
+reimplementation explicitly, which is the right thing to have on record if a reviewer
+asks why the authors' code was not reused. **[LEGAL]** if any of `FEM.py` were later
+found to be a transliteration rather than a reimplementation, the analysis changes; the
+line-level comparison is strong evidence but it is evidence, not a legal opinion.
+
+**Two functions genuinely are third-party, and this is the one real defect the review
+found.** Both are Apache-2.0, both were unattributed or under-attributed:
+
+| Function | Source | Copyright |
+| --- | --- | --- |
+| `FEM.py::beta_range` | `dwave-neal` 0.5.x, `neal/sampler.py::_default_ising_beta_range` | 2018 D-Wave Systems Inc. |
+| `bnn_as_qubo.py::le_zero_constraint_to_eq_zero_constraint` | `qubovert`, `_pcbo.py::PCBO.add_constraint_le_zero` | 2020 Joseph T. Iosue |
+
+`beta_range` is verbatim — docstring, comments and all, including upstream's "such at"
+typo — apart from the function name and one constant (`log(100)` became `log(10000)`).
+The `qubovert` one carries a bare "Inspired by PCBO.add_constraint_le_zero
+implementation" comment but no copyright or licence notice, and the ancilla loop, the
+branch structure, the two warning strings and the "don't mutate the P" comment are
+carried over essentially intact.
+
+Apache-2.0 §4(a)/(b) require the copyright notices to travel with a redistribution and
+require modifications to be stated. **This does not require changing the project
+licence** — Apache-2.0 is permissive and one-way compatible with MIT, and the two
+functions simply remain Apache-2.0 inside an otherwise-MIT distribution. It requires
+notices, which is what `NOTICE` now provides. Putting them in a top-level `NOTICE`
+satisfies §4 at the distribution level; **inline headers on the two functions would be
+better still**, and are a five-line change to `FEM.py` and `bnn_as_qubo.py` that was
+deliberately left to the authors rather than made here.
+
+**The venue asks for less than this.** Springer Nature's code policy requires a Code
+Availability statement and a permanent identifier — *"providing a GitHub link only is not
+sufficient"* — and on licensing says only that *"authors are encouraged to manage
+subsequent code versions and to use a license approved by the open source initiative"*,
+with no named licence. Nature Portfolio's reporting-standards page uses the same
+sentence. npj Unconventional Computing's own submission guidelines require a Code
+availability statement in the Methods and mention neither licences nor DOI-minting
+repositories. MIT is OSI-approved, so this is already satisfied. Note also that the
+article licence is a separate matter: npj UC publishes under CC BY **or** CC BY-NC-ND at
+the author's election, and Springer Nature states it *"does not claim intellectual
+property rights for datasets connected to published papers"*, so the repository's licence
+is entirely the authors' call and need not match the article's.
+
+**Neither funder requires anything more.** NSF's Public Access Plan 2.0 and the 2022
+OSTP memo cover publications and scientific data; the OSTP memo does not contain the word
+"software" at all. PAPPG Supplement 2 (NSF 26-202, effective January 2026) moved software
+into the *sharing expectation* and added one advisory sentence — material *"should be
+assigned permissive licenses that allow for public reuse"* — with no named licence and no
+OSI requirement. MIT is exactly a permissive licence. DOE is weaker still: 2 CFR 910
+Subpart D is scoped to for-profit recipients and does not apply to a university award;
+the applicable provisions (GNP-119, GNP-821-US) invoke 2 CFR 200.315 and Bayh-Dole and
+mention software nowhere; and the DOE Public Access Plan says outright that re-use rights
+*"are not a mandatory element of DOE's Plan"*. DOE CODE, which in any case binds
+contractors and labs rather than grantees, even offers "Closed Source" as a project type.
+Both funders do get a standing government-use licence (2 CFR 200.315(b)/(d)) — that is a
+licence to the Government, not to the public, and it neither requires nor prevents any
+public licence.
+
+### 6.2 The patent question, which is the one to actually ask someone about
+
+**[LEGAL]** MIT is silent on patents. Apache-2.0 grants an express patent licence (§3)
+with a retaliation-termination clause. Bayh-Dole and the funders' march-in rights attach
+to *patentable inventions*, not to copyright, so they do not constrain the code licence —
+but if the QCBO-to-QUBO encoding is or may become the subject of a UC invention
+disclosure, the choice between MIT and Apache-2.0 is a rights-retention decision, not a
+software-licensing one. MIT's silence is the more conservative option, since Apache-2.0
+would grant downstream users a patent licence explicitly. Two of the authors are at UCSB,
+and **UC's copyright policy generally leaves copyright in scholarly and software works
+with the authors while patents run through the institution** — but the specific
+disclosure and release requirements vary, and this note is not the place to resolve them.
+**Confirm with UCSB's Office of Technology & Industry Alliances before publishing.** Do
+not treat this paragraph as clearance.
+
+### 6.3 Why the data get their own licence, and why that is the bigger issue
+
+MIT is written for software. Its operative terms are about "the Software" and about
+including the notice in "copies or substantial portions of the Software"; applied to a
+directory of `.txt` coupling matrices and `.pth` checkpoints it is at best odd and at
+worst ambiguous about what a "substantial portion" even is. Creative Commons says
+directly that *"the only categories of works for which CC does not recommend its licenses
+are computer software and hardware"* — and the converse is the received wisdom too.
+Springer Nature's own licence chooser for data deposits offers exactly this pairing: CC0
+and CC BY 4.0 for data, MIT and Apache-2.0 for software. *Scientific Data*'s repository
+policy goes further and *requires* CC0 or CC BY for data, explicitly disallowing `-SA`
+and `-NC` clauses. FAIR R1.1 and FAIR4RS R1.1 both require a clear licence without naming
+one. So CC BY 4.0 for the data is the conventional, well-supported choice, and it costs
+nothing: like MIT it permits commercial use, modification and redistribution, and asks
+only for attribution, which citing the paper satisfies.
+
+**The MNIST chain of title is the genuinely awkward part, and it is why `LICENSE-DATA`
+is worded the way it is.** Findings:
+
+- MNIST was never released under an explicit licence. Wayback snapshots of
+  `yann.lecun.com/exdb/mnist/` from 2002, 2020 and 2024 contain no occurrence of
+  "licen", "copyright", "terms", "permission" or "public domain".
+- That page no longer serves the files. Since roughly mid-January 2025 it returns an
+  empty directory index and the `.gz` files 404. **This is a live problem for the
+  manuscript's Data Availability statement**, which should not point readers at a dead
+  URL; point at a maintained mirror or at QMNIST, and link a Wayback snapshot.
+- Every asserted licence for MNIST is third-party invention and they contradict each
+  other. The widely-copied "CC BY-SA 3.0" traces to a single unsourced sentence on the
+  PyMVPA site (present since 2011), copied into Keras's `mnist.py` docstring and from
+  there into hundreds of repositories. HuggingFace's `ylecun/mnist` card says MIT.
+  TensorFlow Datasets asserts no licence at all. Kaggle mirrors variously say CC0-1.0,
+  DbCL-1.0 and "unknown". None traces to LeCun, Cortes or Burges.
+- NIST Special Database 19, from which MNIST was built, is not safely "public domain"
+  either: the Standard Reference Data Act (15 U.S.C. §290e) is an express carve-out from
+  17 U.S.C. §105 letting NIST secure copyright in reference data. NIST has not asserted
+  it for SD19, but the defensible statement is "no explicit licence; NIST asserts no US
+  copyright and grants a royalty-free right to prepare derivative works", not a flat
+  §105 claim.
+- The strongest contrary data point is QMNIST (`facebookresearch/qmnist`), by Yadav and
+  **Bottou** — a co-author of the original MNIST paper — which regenerates MNIST from
+  SD19 and releases it under BSD. The people closest to the provenance treated the
+  images as freely relicensable.
+
+**[LEGAL]** Whether the shipped derived artefacts are copyright derivative works of MNIST
+is untested. The binarized, downsampled subsets are the most exposed, since they still
+reproduce the images and re-use MNIST's selection; the QUBO coupling matrices are
+algorithmically derived numbers with no recognisable expression and are very unlikely to
+be. *Feist* rejects sweat-of-the-brow and holds compilation copyright "thin", which cuts
+in the authors' favour, and the EU sui generis database right almost certainly does not
+apply (Art. 11(1) limits it to EU-based makers, and the 15-year term would have expired
+regardless). No case law or authoritative commentary was found either way. This is
+recorded so that nobody later mistakes the confidence level for higher than it is.
+
+The practical hedges are all already in place: only derived artefacts are shipped, not
+the original images; `LICENSE-DATA` grants only whatever rights the authors hold in those
+artefacts and disclaims any grant over MNIST itself; and it never says the derived data
+are "consistent with MNIST's licensing terms", because there were none to be consistent
+with.
+
+### 6.4 What was checked and found clean
+
+- No GPL/LGPL/AGPL anywhere in the dependency graph.
+- `TrainingNN.py`'s `Binarize` straight-through estimator is the standard Hubara-style
+  idiom, not a copy of any identifiable repository; a code search for its distinctive
+  lines returns no match.
+- The Fujitsu and D-Wave artefacts in `data/hardware_results.tar.gz` are numeric solver
+  outputs — bit vectors and timings — produced by the authors' own runs, not third-party
+  software.
+
+### 6.5 One unrelated thing noticed in passing
+
+The recorded Gurobi logs in `data/gurobi_logs.tar.gz` begin with
+`Set parameter LicenseID to value 2744792` and an academic-licence banner. That is not a
+licensing problem and a licence ID is not a credential, but it is an identifier tied to a
+named academic account that will be permanent once the DOI is minted. Scrub it or leave
+it knowingly; do not discover it afterwards.

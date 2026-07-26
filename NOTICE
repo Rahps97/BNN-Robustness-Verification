@@ -1,0 +1,86 @@
+Third-party code incorporated into this repository
+==================================================
+
+The repository as a whole is MIT (see LICENSE), and its data are CC BY 4.0 (see
+LICENSE-DATA). Two functions, however, are derived from Apache-2.0 licensed
+projects rather than written from scratch. Apache-2.0 section 4 requires that
+the copyright notices travel with the code and that modifications be stated, so
+they are recorded here.
+
+Including Apache-2.0 derived code in an MIT-licensed distribution is permitted;
+Apache-2.0 is a permissive licence with no copyleft. The two functions below
+remain under Apache-2.0. Everything else stays MIT.
+
+
+1. FEM.py :: beta_range()
+-------------------------
+
+Derived from dwave-neal (now dwave-samplers), neal/sampler.py ::
+_default_ising_beta_range, as of version 0.5.x.
+
+    Copyright 2018 D-Wave Systems Inc.
+    Licensed under the Apache License, Version 2.0
+    http://www.apache.org/licenses/LICENSE-2.0
+    Source: https://github.com/dwavesystems/dwave-neal
+
+Modifications made:
+  - renamed from _default_ising_beta_range to beta_range;
+  - the cold-temperature target excitation rate was changed from 1% to 0.01%,
+    i.e. cold_beta = log(100)/min_delta_energy became
+    cold_beta = log(10000)/min_delta_energy.
+Otherwise the function is unchanged, including its docstring and comments.
+
+Note that upstream has since rewritten this function substantially; the version
+here descends from the older one.
+
+
+2. bnn_as_qubo.py :: le_zero_constraint_to_eq_zero_constraint()
+---------------------------------------------------------------
+
+Adapted from qubovert, qubovert/_pcbo.py :: PCBO.add_constraint_le_zero.
+
+    Copyright 2020 Joseph T. Iosue
+    Licensed under the Apache License, Version 2.0
+    http://www.apache.org/licenses/LICENSE-2.0
+    Source: https://github.com/jtiosue/qubovert
+
+Modifications made:
+  - rewritten as a free function that builds and returns a fresh qv.PCBO,
+    rather than a method mutating self;
+  - the upstream _append_constraint("le", P) bookkeeping and the "if not lam"
+    early return are dropped, and the Lagrange multiplier is fixed at 1 rather
+    than taken as an argument;
+  - in the general branch, the slack-padded polynomial is added to the model
+    directly (model += P) instead of being routed through
+    add_constraint_eq_zero(...) followed by _pop_constraint("eq"). Upstream
+    squares the polynomial into a penalty term; this version does not, which is
+    the point of the function -- it hands back an equality-form constraint for
+    the caller to penalise.
+
+The ancilla loop, the min_val / max_val branch structure, the two
+QUBOVertWarning messages and the "don't mutate the P" comment are carried over
+essentially verbatim.
+
+
+Dependencies
+------------
+
+Nothing else in this repository incorporates third-party source. The packages
+in requirements.txt are ordinary runtime dependencies, installed by pip and not
+redistributed here, and impose no conditions on this repository:
+
+  Apache-2.0        qubovert, dimod, dwave-samplers (and the rest of Ocean)
+  BSD-3-Clause      torch, torchvision, numpy, scipy, scikit-learn
+  MIT               z3-solver
+  MPL-2.0 / MIT     tqdm
+  PSF-style         matplotlib
+
+MPL-2.0 is file-level copyleft: it constrains only the distribution of modified
+MPL-covered files, and section 3.3 expressly permits combining unmodified MPL
+files into a larger work under other terms. tqdm is used unmodified.
+
+gurobipy is proprietary, is not redistributed here, and is not required to
+reproduce any reported number -- verify_paper.py reads the recorded solver logs
+instead. Its end-user licence agreement binds whoever installs and runs it; it
+is not a copyright licence, and it does not reach source that merely calls the
+API.

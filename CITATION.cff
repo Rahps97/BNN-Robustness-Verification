@@ -44,7 +44,13 @@ contact:
     orcid: https://orcid.org/0000-0002-2292-0030
     email: zhengzhang@ece.ucsb.edu
 repository-code: https://github.com/Rahps97/BNN-Robustness-Verification
-license: MIT
+# CFF has no per-file licensing, so both identifiers are listed. They are not
+# alternatives: MIT covers the code (LICENSE) and CC-BY-4.0 covers the shipped
+# datasets, QUBO instances, checkpoints and recorded solver output
+# (LICENSE-DATA). Two functions are Apache-2.0 derived; see NOTICE.
+license:
+  - MIT
+  - CC-BY-4.0
 keywords:
   - binary neural networks
   - robustness verification
