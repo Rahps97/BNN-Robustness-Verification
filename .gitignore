@@ -37,3 +37,8 @@ TrainedNN/*
 # Unpacked from data/hardware_results.tar.gz and data/gurobi_logs.tar.gz.
 /hardware/
 /gurobi_logs/
+
+# Unpacked from data/width_scaling.tar.gz, and the output directory
+# width_scaling_sweep.py writes when someone re-runs the sweep from scratch.
+/width_scaling/
+/width_scaling_rerun/

@@ -13,40 +13,41 @@ python -m pip install -r requirements.txt
 python verify_paper.py
 ```
 
-That is the whole procedure. It runs **149 checks** over **all four instances** (5x5, 7x7, 11x11, 28x28), takes **about 25 seconds** once the archives are unpacked, and needs **no GPU, no solver license, no network access and no annealing hardware**. Every check prints its own pass/fail line, and the script exits non-zero if any reported number fails to reproduce — or if too little ran for the report to mean anything. See *Verdict and exit status* below.
+That is the whole procedure. It runs **209 checks** over **all four instances** (5x5, 7x7, 11x11, 28x28) **and the hidden-layer width sweep**, takes **about 90 seconds** once the archives are unpacked, and needs **no GPU, no solver license, no network access and no annealing hardware**. Every check prints its own pass/fail line, and the script exits non-zero if any reported number fails to reproduce — or if too little ran for the report to mean anything. See *Verdict and exit status* below.
 
-**Tables II to VII are covered, with the exceptions listed below.** That includes every row of Table VII: the two-class instance, the Gurobi and both hardware solution vectors, and the recorded Gurobi solver logs, all ship alongside the QUBOs, so a reviewer can re-evaluate them without any hardware or license. It also includes the quantitative claims Section IV-B makes in prose rather than in a table — the coupling and coefficient statistics of the two-class instance, and its linear-constraint-form baselines — which `linear_baseline.py` and `bruteforce_5x5_energy.py` also expose as standalone scripts.
+**Tables II to VIII are covered, with the exceptions listed below**, and that range now includes the revision's new hidden-layer width-scaling table, Table VI. That includes every row of Table VIII: the two-class instance, the Gurobi and both hardware solution vectors, and the recorded Gurobi solver logs, all ship alongside the QUBOs, so a reviewer can re-evaluate them without any hardware or license. It also includes the quantitative claims Section IV-B makes in prose rather than in a table — the coupling and coefficient statistics of the two-class instance, and its linear-constraint-form baselines — which `linear_baseline.py` and `bruteforce_5x5_energy.py` also expose as standalone scripts.
 
 **There are three exceptions, and they are different in kind.** One is a longer experiment that `verify_paper.py` does not invoke; the other two are numbers no script in this repository can recover, because the data behind them was not archived. All three are set out below.
 
-**Exception 1: three of Table VI's five data columns.** Table VI reports repeated simulated annealing over 30 seeds, and its *% All Constraints Satisfying Solution*, *Average Unsatisfied Constraints* and *Median Time Taken* columns come from `SA_repeated.py`, a separate and much longer experiment that `verify_paper.py` does not invoke. What the default run does check for Table VI is the structure it shares with Tables III and IV: the variable count, the true constraint count and the energy offset. To reproduce the other three columns, run `python SA_repeated.py` directly.
+**Exception 1: three of Table VII's five data columns.** Table VII reports repeated simulated annealing over 30 seeds, and its *% All Constraints Satisfying Solution*, *Average Unsatisfied Constraints* and *Median Time Taken* columns come from `SA_repeated.py`, a separate and much longer experiment that `verify_paper.py` does not invoke. What the default run does check for Table VII is the structure it shares with Tables III and IV: the variable count, the true constraint count and the energy offset. To reproduce the other three columns, run `python SA_repeated.py` directly.
 
-That script takes no command-line arguments: the run is configured by the constants at the top of the file. As shipped it selects the smallest instance (`INPUT_SIZE = SIZES[0]`, the 5x5) and runs `NUM_REPETITIONS = 30` seeds at `NUM_READS = 1024` and `NUM_SWEEPS = 1000`, which on the 5x5 costs about 6 s per repetition — roughly three minutes in total, against the 25 seconds of `verify_paper.py`. Edit `INPUT_SIZE` to reach the larger instances, which are correspondingly slower. Results are written to `SA_Repeated_Results/`, which is git-ignored, and nothing is written until all repetitions have finished, so an interrupted run leaves no output.
+That script takes no command-line arguments: the run is configured by the constants at the top of the file. As shipped it selects the smallest instance (`INPUT_SIZE = SIZES[0]`, the 5x5) and runs `NUM_REPETITIONS = 30` seeds at `NUM_READS = 1024` and `NUM_SWEEPS = 1000`, which on the 5x5 costs about 6 s per repetition — roughly three minutes in total, against the 90 seconds of `verify_paper.py`. Edit `INPUT_SIZE` to reach the larger instances, which are correspondingly slower. Results are written to `SA_Repeated_Results/`, which is git-ignored, and nothing is written until all repetitions have finished, so an interrupted run leaves no output.
 
-**Exception 2: Table VII's quantum-annealer runtime, the 0.724 s, and the ~20 microseconds per shot that Section IV-B derives from it.** These are reported from the log of the D-Wave session and cannot be recovered from anything in this repository. The archived sample batch is a pandas DataFrame whose columns are the 113 spin values plus `chain_break_fraction`, `energy` and `num_occurrences`, and nothing else: no `timing` dictionary, no `qpu_access_time`, no wall clock. The only timing file that ships, `hardware/Time/`, holds a single record and it belongs to the Fujitsu row (`{'time': 0.366, 'energy': -874674}`). **No script here asserts the 0.724 s, and none should**: there is no second source to check it against, and free D-Wave access has since ended, so the session cannot be re-run. Everything else in that row — the best energy, the constraint count, the chain-break statistics, the shot count of the archived batch — is recomputed from the DataFrame by `verify_paper.py`.
+**Exception 2: Table VIII's quantum-annealer runtime, the 0.724 s, and the ~20 microseconds per shot that Section IV-B derives from it.** These are reported from the log of the D-Wave session and cannot be recovered from anything in this repository. The archived sample batch is a pandas DataFrame whose columns are the 113 spin values plus `chain_break_fraction`, `energy` and `num_occurrences`, and nothing else: no `timing` dictionary, no `qpu_access_time`, no wall clock. The only timing file that ships, `hardware/Time/`, holds a single record and it belongs to the Fujitsu row (`{'time': 0.366, 'energy': -874674}`). **No script here asserts the 0.724 s, and none should**: there is no second source to check it against, and free D-Wave access has since ended, so the session cannot be re-run. Everything else in that row — the best energy, the constraint count, the chain-break statistics, the shot count of the archived batch — is recomputed from the DataFrame by `verify_paper.py`.
 
-**Exception 3: the two-class network behind Table VII is not shipped, so its certificate is checked at the constraint level only.** `TrainedNN/` holds the four ten-class networks of Table II and nothing else; no checkpoint for the two-class network exists in the material the authors provided, and none has been fabricated here. For Tables IV and V every witness is replayed through an independent NumPy forward pass of the network itself, which is a second, encoding-independent opinion. For Table VII that second opinion is not available: the Fujitsu, Gurobi and SA vectors are verified against the encoded constraint system — `qubovert`'s own `is_solution_valid`, plus a term-by-term rebuild of the QUBO from the pickled constraint dictionaries — and that is the whole of the check. It establishes that each vector satisfies every constraint the QUBO encodes; it does not independently re-derive what the two-class network computes on the perturbed input.
+**Exception 3: the two-class network behind Table VIII is not shipped, so its certificate is checked at the constraint level only.** `TrainedNN/` holds the four ten-class networks of Table II and nothing else; no checkpoint for the two-class network exists in the material the authors provided, and none has been fabricated here. For Tables IV and V every witness is replayed through an independent NumPy forward pass of the network itself, which is a second, encoding-independent opinion. For Table VIII that second opinion is not available: the Fujitsu, Gurobi and SA vectors are verified against the encoded constraint system — `qubovert`'s own `is_solution_valid`, plus a term-by-term rebuild of the QUBO from the pickled constraint dictionaries — and that is the whole of the check. It establishes that each vector satisfies every constraint the QUBO encodes; it does not independently re-derive what the two-class network computes on the perturbed input.
 
-**The Gurobi cell of Table VII used to be a second exception, and is not one any more.** No solution vector had been archived for that solver on the two-class instance, so the row was reported as `UNAVAILABLE`. The first author has since supplied the vector, and it now ships in `data/hardware_results.tar.gz` as `hardware/Gurobi/`, in the same format as the Fujitsu solution. `verify_paper.py` re-evaluates it exactly as it does the Fujitsu row: it reaches the target energy of **-874,674** with **all 65 encoded constraints satisfied**. His own `Verify_Gurobi.ipynb` ships beside it as the provenance. That run used a plain `m.optimize()` with no early-stopping callback, so Gurobi solved this QUBO to proven optimality, unlike the four Table IV runs the callback stopped short of a proof — the instance is far smaller. Its **61.447 s is not asserted**, because wall time is machine dependent: the author's notebook records 16.658 s for the same instance and a third machine takes 25 to 30 s, so a reviewer who re-runs it and sees 17 to 30 s is seeing the expected spread, the same way the SA row's time is handled.
+**The Gurobi cell of Table VIII used to be a second exception, and is not one any more.** No solution vector had been archived for that solver on the two-class instance, so the row was reported as `UNAVAILABLE`. The first author has since supplied the vector, and it now ships in `data/hardware_results.tar.gz` as `hardware/Gurobi/`, in the same format as the Fujitsu solution. `verify_paper.py` re-evaluates it exactly as it does the Fujitsu row: it reaches the target energy of **-874,674** with **all 65 encoded constraints satisfied**. His own `Verify_Gurobi.ipynb` ships beside it as the provenance. That run used a plain `m.optimize()` with no early-stopping callback, so Gurobi solved this QUBO to proven optimality, unlike the four Table IV runs the callback stopped short of a proof — the instance is far smaller. Its **61.447 s is not asserted**, because wall time is machine dependent: the author's notebook records 16.658 s for the same instance and a third machine takes 25 to 30 s, so a reviewer who re-runs it and sees 17 to 30 s is seeing the expected spread, the same way the SA row's time is handled.
 
-**Table VII's SA row is checked by re-running the solver, not by re-evaluating a stored vector.** No SA vector was archived either, but on this 113-variable instance simulated annealing is cheap, so `verify_paper.py` simply runs it as part of the default run: `dwave-samplers`' `SimulatedAnnealingSampler` at `num_reads = 1000`, up to three seeds, stopping at the first that reaches the target. It reaches the target energy of **-874,674** with **all 65 encoded constraints satisfied**, in about **2.3 s** per seed. Being a stochastic solver, reaching the target is `PASS` and falling short would be `INCONCLUSIVE`, never `FAIL`. For reference, the authors' own stored notebook output records 3.90 s and Table VII reports 3.559 s — the same result on three different machines.
+**Table VIII's SA row is checked by re-running the solver, not by re-evaluating a stored vector.** No SA vector was archived either, but on this 113-variable instance simulated annealing is cheap, so `verify_paper.py` simply runs it as part of the default run: `dwave-samplers`' `SimulatedAnnealingSampler` at `num_reads = 1000`, up to three seeds, stopping at the first that reaches the target. It reaches the target energy of **-874,674** with **all 65 encoded constraints satisfied**, in about **2.3 s** per seed. Being a stochastic solver, reaching the target is `PASS` and falling short would be `INCONCLUSIVE`, never `FAIL`. For reference, the authors' own stored notebook output records 3.90 s and Table VIII reports 3.559 s — the same result on three different machines.
 
-Everything needed ships compressed in `data/` (5.8 MB in total), and `verify_paper.py` unpacks **all four archives** on the first run and says so. That first run is therefore slower than the figure above, because it also writes out about 450 MB of dense text — 137 MB of QUBO matrices and 313 MB of data sets; how much slower depends on the disk and on what else the machine is doing, and measurements from about a minute to a few minutes have been seen. Every run afterwards reuses the extracted files. The script reports its own elapsed time on the last line. The 5x5 QUBO, checkpoint and data set are tracked in the repository directly, so `python verify_paper.py --quick` runs on a bare clone without unpacking either large archive; it still unpacks the two small archives (0.2 MB together) that the Gurobi-log and Table VII checks read.
+Everything needed ships compressed in `data/` (10.0 MB in total), and `verify_paper.py` unpacks **all five archives** on the first run and says so. That first run is therefore slower than the figure above, because it also writes out about 470 MB — 137 MB of QUBO matrices, 313 MB of data sets and 21 MB of width-sweep records; how much slower depends on the disk and on what else the machine is doing: on an SSD the unpacking added about a second to the total measured here, and a slower disk will add more. Every run afterwards reuses the extracted files. The script reports its own elapsed time on the last line. The 5x5 QUBO, checkpoint and data set are tracked in the repository directly, so `python verify_paper.py --quick` runs on a bare clone without unpacking either large archive; it still unpacks the two small archives (0.2 MB together) that the Gurobi-log and Table VIII checks read, and it leaves the width sweep out entirely, because that is a separate series rather than one of the four instances.
 
 ### What it checks
 
 | Paper table | Checked how |
 | --- | --- |
 | Table II | The accuracy column and the *Total Test Data* column are read out of the `Info.txt` that `TrainingNN.py` wrote next to each checkpoint, whose `Test set: ... Accuracy: <correct>/<tested> (<percent>%)` line carries both. The percentage is recomputed from the two counts as well, with the rounding PyTorch's own test loop uses, so an edited `Info.txt` would show up rather than pass. *Total Train Data* is recorded nowhere in `TrainedNN/`, so it is counted from the shipped `DataLoader` in `data/datasets.tar.gz`. |
-| Tables III, IV, VI (structure only) | Each QUBO is rebuilt from scratch with the authors' own `bnn_as_qubo.setup_optim_model`, and the variable count, the **true** constraint count and the energy offset `E_off` are compared with the tables. The rebuilt matrix is then compared entry by entry with the shipped `QUBO_W.txt`. For Table VI this covers only the columns shared with Tables III and IV; its three repeated-annealing columns are not checked here and require `SA_repeated.py`. |
+| Tables III, IV, VII (structure only) | Each QUBO is rebuilt from scratch with the authors' own `bnn_as_qubo.setup_optim_model`, and the variable count, the **true** constraint count and the energy offset `E_off` are compared with the tables. The rebuilt matrix is then compared entry by entry with the shipped `QUBO_W.txt`. For Table VII this covers only the columns shared with Tables III and IV; its three repeated-annealing columns are not checked here and require `SA_repeated.py`. |
 | Table IV, FEM column | The FEM solution vectors in `FEM_best_configurations.txt` are evaluated against the shipped QUBO matrices as `x^T Q x`, and each is decoded into a perturbation and replayed through an independent NumPy forward pass of the BNN. |
 | Table V | The Z3 SMT baseline is re-run at each instance's recorded epsilon, and every witness is reverse-checked with that same independent forward pass. |
 | Table V, `d_min` | Recomputed twice per instance: by exhaustive enumeration and by a Z3 minimum-distance scan. |
 | Table IV, Gurobi column | The incumbent is read out of each recorded solver log and compared with the table, along with the fact that no run proved optimality and that each was ended by the early-stopping callback rather than by a time limit — the no-improvement span in the log is checked against the limit `run_gurobi_all.py` ships for that instance. The reported energy score is then reached by a second, independent route, as the FEM column is: `dE` is taken against the `Minimum Energy` recorded in that instance's own `Info.txt`, so the score check fails if the shipped instance and the reported number disagree even when the log itself reads exactly as published. See *Gurobi Solver* below. |
-| Section IV-B (prose) | The coupling and coefficient statistics of the two-class instance are recomputed from the pickled QUBO and constraint dictionaries: 1,164 of the 6,328 possible couplings present, a median logical degree of 24 against a Pegasus qubit's 15 couplers, coefficients from 1 to 332,801, a largest coupling of 262,144 = 512², the 900 couplings the three 25-variable sign-layer residuals contribute on their own, and the fact that the other 62 residuals square to couplings of at most 4 and the unit-weight budget to 2. The same section's *linear constraint form* comparison is re-run too: the 64 equalities and the budget inequality are handed to Gurobi and to Z3 directly, and enumerated exhaustively over the 2¹⁵ perturbation patterns, giving 30,826 feasible assignments and `d_min = 4` by three independent routes, against the 10 and 7 pixels the archived Digital Annealer and Gurobi vectors actually flip. `linear_baseline.py` runs the same thing standalone. **Runtimes are printed and never asserted**, here as in Table VII. |
-| Table VII | The two-class QUBO is rebuilt from the authors' pickled constraint dictionaries with the recipe in their own `Verify.ipynb`, and both hardware samples are re-evaluated against it: the Fujitsu solution attains the target energy exactly and satisfies all 65 encoded constraints in 0.366 s, and the best of D-Wave's 4,000 archived shots reaches −874,318, 356 above the target, satisfying 36 of 65. None of those 4,000 samples kept all of its chains intact — the smallest chain-break fraction anywhere in the batch is 0.00885 — which is the point Section IV-B makes about embedding this QUBO into Pegasus, and it is checked over the whole batch rather than over the best sample alone. Those 4,000 are the archived batch of a 5,000-shot run, which was made in two batches of 4,000 and 1,000 shots; only the first was archived, and free D-Wave access has since ended, so the other 1,000 cannot be recovered or re-run. The reported quantum-annealer entry is therefore reproduced here from the archived batch, and the remaining 1,000 shots are not independently verifiable. The SA row has no archived vector, so simulated annealing is re-run on the same instance and reaches −874,674 with 65 of 65 in about 2.3 s. The Gurobi vector, supplied by the first author after submission, is re-evaluated the same way as the Fujitsu one and also reaches −874,674 with 65 of 65; its 61.447 s is machine dependent and is not asserted. Every row of the table is therefore checked here. |
+| Section IV-B (prose) | The coupling and coefficient statistics of the two-class instance are recomputed from the pickled QUBO and constraint dictionaries: 1,164 of the 6,328 possible couplings present, a median logical degree of 24 against a Pegasus qubit's 15 couplers, coefficients from 1 to 332,801, a largest coupling of 262,144 = 512², the 900 couplings the three 25-variable sign-layer residuals contribute on their own, and the fact that the other 62 residuals square to couplings of at most 4 and the unit-weight budget to 2. The same section's *linear constraint form* comparison is re-run too: the 64 equalities and the budget inequality are handed to Gurobi and to Z3 directly, and enumerated exhaustively over the 2¹⁵ perturbation patterns, giving 30,826 feasible assignments and `d_min = 4` by three independent routes, against the 10 and 7 pixels the archived Digital Annealer and Gurobi vectors actually flip. `linear_baseline.py` runs the same thing standalone. **Runtimes are printed and never asserted**, here as in Table VIII. |
+| Hidden-layer width table | Each of the six widths of the 31-input series has its QUBO rebuilt from its shipped checkpoint with the same `bnn_as_qubo.setup_optim_model`, and the *QUBO Variables* and *QUBO Terms* columns are compared with the table. The five stored best annealing vectors of that width are then re-scored against that rebuilt QUBO, which reproduces each recorded `best_energy` and `gap_to_target` exactly and gives the table's *Best SA Gap* and *SA Seeds at Target* columns. Z3 is re-run at every width, both at the budget and as a minimum-distance scan, and both the status and `d_min` are checked. The annealer is **not** re-run; see *The hidden-layer width sweep* below. The 1023-input corroboration series is behind `--with-width-1023`. |
+| Table VIII | The two-class QUBO is rebuilt from the authors' pickled constraint dictionaries with the recipe in their own `Verify.ipynb`, and both hardware samples are re-evaluated against it: the Fujitsu solution attains the target energy exactly and satisfies all 65 encoded constraints in 0.366 s, and the best of D-Wave's 4,000 archived shots reaches −874,318, 356 above the target, satisfying 36 of 65. None of those 4,000 samples kept all of its chains intact — the smallest chain-break fraction anywhere in the batch is 0.00885 — which is the point Section IV-B makes about embedding this QUBO into Pegasus, and it is checked over the whole batch rather than over the best sample alone. Those 4,000 are the archived batch of a 5,000-shot run, which was made in two batches of 4,000 and 1,000 shots; only the first was archived, and free D-Wave access has since ended, so the other 1,000 cannot be recovered or re-run. The reported quantum-annealer entry is therefore reproduced here from the archived batch, and the remaining 1,000 shots are not independently verifiable. The SA row has no archived vector, so simulated annealing is re-run on the same instance and reaches −874,674 with 65 of 65 in about 2.3 s. The Gurobi vector, supplied by the first author after submission, is re-evaluated the same way as the Fujitsu one and also reaches −874,674 with 65 of 65; its 61.447 s is machine dependent and is not asserted. Every row of the table is therefore checked here. |
 
-Note that `E_off` is an **energy**, not a constraint count. Earlier versions of Tables III, IV and VI reported it in the *Total Constraints* column; `verify_paper.py` recomputes and reports the two separately so the correction can be checked directly. The same distinction applies to Table VII, whose *Constraints Satisfied* column prints 1,273 (`len(H.to_qubo())`, i.e. the instance's 1,272 QUBO terms plus the constant-offset entry) and 356 (an energy gap) rather than constraint counts; the instance has 65 encoded constraints in total, and the script prints the corrected figures next to the reported ones.
+Note that `E_off` is an **energy**, not a constraint count. Earlier versions of Tables III, IV and VII reported it in the *Total Constraints* column; `verify_paper.py` recomputes and reports the two separately so the correction can be checked directly. The same distinction applies to Table VIII, whose *Constraints Satisfied* column prints 1,273 (`len(H.to_qubo())`, i.e. the instance's 1,272 QUBO terms plus the constant-offset entry) and 356 (an energy gap) rather than constraint counts; the instance has 65 encoded constraints in total, and the script prints the corrected figures next to the reported ones.
 
 ### Sample output
 
@@ -65,7 +66,8 @@ Note that `E_off` is an **energy**, not a constraint count. Earlier versions of 
  [setup] the 7x7, 11x11, 28x28 training and test sets not extracted; unpacking data/datasets.tar.gz
  [setup] into the repository root (Dataset/; ~313 MB expanded, git-ignored)
  [setup] the recorded Gurobi solver logs not extracted; unpacking data/gurobi_logs.tar.gz
- [setup] the Table VII two-class hardware instance not extracted; unpacking data/hardware_results.tar.gz
+ [setup] the Table VIII two-class hardware instance not extracted; unpacking data/hardware_results.tar.gz
+ [setup] the hidden-layer width sweep not extracted; unpacking data/width_scaling.tar.gz
 
 -------------------------------------------------------------------------------
  Table II -- the trained networks: accuracy and data set sizes
@@ -77,7 +79,7 @@ Note that `E_off` is an **energy**, not a constraint count. Earlier versions of 
    ...
 
 -------------------------------------------------------------------------------
- Tables III, IV, VI -- QUBO structure (variables / constraints / energy offset)
+ Tables III, IV, VII -- QUBO structure (variables / constraints / energy offset)
 -------------------------------------------------------------------------------
  5x5 (31x7x10)   rebuilt in 2.2 s
    [     PASS     ] Total Variables                                paper          276   recomputed          276
@@ -94,27 +96,27 @@ Note that `E_off` is an **energy**, not a constraint count. Earlier versions of 
    [     PASS     ] witness reverse-checked on the original BNN    110 pixels flipped <= budget 128, all perturbable, prediction 2 -> 6
 
 -------------------------------------------------------------------------------
- Table VII -- the two-class instance: hardware rows and SA
+ Table VIII -- the two-class instance: hardware rows and SA
 -------------------------------------------------------------------------------
  Digital Annealer (Fujitsu)
    [     PASS     ] Best energy                                    paper     -874,674   recomputed     -874,674   (the recorded run reports -874,674)
    [     PASS     ] every encoded constraint satisfied             qubovert is_solution_valid True, penalty value 0, so the target energy is attained exactly
-   [     PASS     ] Constraints satisfied (corrected Table VII)    paper           65   recomputed           65   of 65
+   [     PASS     ] Constraints satisfied (corrected Table VIII)    paper           65   recomputed           65   of 65
    [     PASS     ] Total time (s)                                 paper        0.366   recomputed        0.366
 
  Simulated Annealing (re-run here; no sample was archived)
    running up to 3 seed(s) at 1,000 reads, stopping at the first that reaches the target ...
-   [     PASS     ] SA best energy (Table VII)                     paper     -874,674   recomputed     -874,674
+   [     PASS     ] SA best energy (Table VIII)                     paper     -874,674   recomputed     -874,674
                     seeds  : 1 run, 1/1 reached the paper's value; energies min -874,674 / median -874,674 / max -874,674
                     gaps   : vs paper 0 -- reproduced exactly; vs target 0 (0.000%) -> at most 0 encoded constraint(s) violated
                     time   : 2.3 s
-   [     PASS     ] Constraints satisfied (corrected Table VII)    paper           65   recomputed           65   of 65
+   [     PASS     ] Constraints satisfied (corrected Table VIII)    paper           65   recomputed           65   of 65
 
  Gurobi (vector supplied by the first author after submission)
    [     PASS     ] Best energy                                    paper     -874,674   recomputed     -874,674   the target energy, so this run found a global minimum
    [     PASS     ] every encoded constraint satisfied             qubovert is_solution_valid True, penalty value 0, so the target energy is attained exactly
-   [     PASS     ] Constraints satisfied (corrected Table VII)    paper           65   recomputed           65   of 65
-                    note   : Table VII reports 61.447 s for this row; wall time is machine dependent and is not asserted
+   [     PASS     ] Constraints satisfied (corrected Table VIII)    paper           65   recomputed           65   of 65
+                    note   : Table VIII reports 61.447 s for this row; wall time is machine dependent and is not asserted
 
 -------------------------------------------------------------------------------
  Section IV-B -- the same instance in its linear constraint form
@@ -134,7 +136,7 @@ Note that `E_off` is an **energy**, not a constraint count. Earlier versions of 
  SUMMARY
 ===============================================================================
  Table II          BNN accuracy and data set sizes  12 passed
- Tables III/IV/VI  QUBO structure                   36 passed
+ Tables III/IV/VII  QUBO structure                   36 passed
  Table IV          FEM energies + reverse check     12 passed
  Table V           Z3 SMT baseline                  8 passed
  Table V           minimum adversarial distance     8 passed
@@ -142,11 +144,12 @@ Note that `E_off` is an **energy**, not a constraint count. Earlier versions of 
  Table IV          Gurobi column                    4 not run
  Table IV          SA column                        4 not run
  Table IV          FEM solver replay                4 not run
- Table VII         hardware results                 30 passed
+ Table VIII         hardware results                 30 passed
  Section IV-B      linear constraint form           6 passed, 1 not run
+ Width scaling     hidden-layer width sweep         60 passed
 
- 136 passed, 0 failed, 13 not run (--with-fem, --with-gurobi, --with-sa)
- elapsed: 26.7 s
+ 196 passed, 0 failed, 13 not run (--with-fem, --with-gurobi, --with-sa)
+ elapsed: 88.1 s
 
  13 check(s) were NOT run and are therefore NOT verified; see the reasons
  above. Do not read them as confirmed.
@@ -157,7 +160,7 @@ Note that `E_off` is an **energy**, not a constraint count. Earlier versions of 
 
 The caveats print **above** the verdict deliberately, so that the last line of the report is never a bare `PASS` sitting on top of the reasons it should be read with.
 
-No row is `unavailable` any more. Table VII's Gurobi cell was the last one, and the vector the first author supplied closed it — see above. The rows that used to be *not run* for want of `data/datasets.tar.gz` — Table II's three *Total Train Data* rows for the larger instances and the structure group's three training-set cross-checks — now run by default, because `verify_paper.py` unpacks that archive too.
+No row is `unavailable` any more. Table VIII's Gurobi cell was the last one, and the vector the first author supplied closed it — see above. The rows that used to be *not run* for want of `data/datasets.tar.gz` — Table II's three *Total Train Data* rows for the larger instances and the structure group's three training-set cross-checks — now run by default, because `verify_paper.py` unpacks that archive too.
 
 The 13 remaining *not run* rows are the opt-in solver reruns listed under *Options* below, plus the Gurobi row of the linear-form group, which needs the same license. **A `not run` row is not a verified row**, which is why the script says so twice — once per row with the flag that would run it, and once in the closing `RESULT` block — and why the totals are reported separately rather than folded together.
 
@@ -173,7 +176,7 @@ A check is never silently omitted. Every row carries one of:
 | `UNAVAILABLE` | cannot be run here: no license, no data, no hardware |
 | `TIMEOUT` | started but exceeded `--timeout` |
 | `INCONCLUSIVE` | ran, but the solver is stochastic and fell short; neither confirms nor refutes the reported number |
-| `NOT VERIFIABLE` | no offline substitute exists at all; defined by the harness but not currently emitted — Table VII's one uncheckable cell reports `UNAVAILABLE` instead |
+| `NOT VERIFIABLE` | no offline substitute exists at all; defined by the harness but not currently emitted — Table VIII's one uncheckable cell reports `UNAVAILABLE` instead |
 
 "Never silently omitted" is enforced rather than asserted. Each check group declares up front how many rows it must produce for the selected instances, flags and available resources, and the script compares that with what it actually recorded. A check that cannot run has to leave a `SKIPPED`, `UNAVAILABLE`, `TIMEOUT` or `INCONCLUSIVE` row behind; if any check disappears instead, the run ends in `RESULT: HARNESS ERROR` rather than reporting a smaller pass count as though nothing had happened.
 
@@ -193,13 +196,14 @@ A check is never silently omitted. Every row carries one of:
 
 | Flag | Effect | Cost and requirements |
 | --- | --- | --- |
-| *(none)*, or `--all` | all four instances, everything that needs nothing external | 149 checks in about 25 s once unpacked, CPU only |
-| `--quick` | 5x5 only, plus the Table VII and Section IV-B rows, which are instance-independent | 65 checks in ~5 s; runs on a bare clone, unpacking only the two small archives (0.2 MB) rather than the QUBO and data set archives that expand to 450 MB between them |
+| *(none)*, or `--all` | all four instances and the width sweep's 31-input series, everything that needs nothing external | 209 checks in about 90 s once unpacked, CPU only. About 60 s of that is the width sweep, whose widest QUBO takes 36 s to rebuild |
+| `--quick` | 5x5 only, plus the Table VIII and Section IV-B rows, which are instance-independent. The width sweep is left out, as the other three instances are | 65 checks in ~5 s; runs on a bare clone, unpacking only the two small archives (0.2 MB) rather than the QUBO, data set and width-sweep archives that expand to 470 MB between them |
 | `--instance 5,7` | a chosen subset | — |
 | `--with-gurobi` | re-solve the Table IV Gurobi column from scratch, instead of reading the recorded logs, and solve the two-class instance's linear constraint form | needs a Gurobi license; hours. The common size-limited license caps at 2,000 variables, so 28x28 (2,235) is reported `UNAVAILABLE`, not `FAIL` |
 | `--with-sa` | Table IV SA column, at `SA.py`'s settings | minutes for 5x5, hours for 28x28; `--sa-seeds N` sets the seed count (default 3) |
 | `--with-fem` | replays FEM at its recorded hyperparameters | seconds to minutes; stochastic, so a shortfall is `INCONCLUSIVE` |
-| `--everything` | all three of the above | — |
+| `--with-width-1023` | the width sweep's 1023-input corroboration series as well as the 31-input one | about half an hour, and up to 4.6 GB of RAM: the QUBO at `W = 255` there has 70,728 variables and 10,110,083 quadratic terms and takes six minutes to rebuild. Its Z3 query can outlast even the 1,800 s bound the sweep itself used, which is reported as `TIMEOUT` and never as `FAIL` |
+| `--everything` | all four of the above | — |
 | `--timeout S` | per-check wall-clock bound | exceeding it is `TIMEOUT`, never `FAIL`. `--timeout 0` means **no limit at all**, including for the opt-in checks, which otherwise get 900 s each. A negative value is rejected |
 | `--json PATH` | machine-readable report as well | `-` writes to stdout, after the human-readable report rather than instead of it, so pipe to a file and parse that rather than straight into `jq`. `result` carries the verdict word and `exit_code` the status from the table above; `expected_check_counts` and `recorded_check_counts` carry the per-group self-check |
 | `--verbose` | full output of every sub-check | — |
@@ -213,21 +217,23 @@ That same fact gives a lower bound, and it is checked rather than assumed: with 
 
 | Archive | Size | Extracts to | Needed for |
 | --- | --- | --- | --- |
-| `data/qubo_and_networks.tar.gz` | 0.54 MB | `QUBO/`, `TrainedNN/` | Tables III to VI: the four QUBO instances and their checkpoints |
+| `data/qubo_and_networks.tar.gz` | 0.54 MB | `QUBO/`, `TrainedNN/` | Tables III to V and VII: the four QUBO instances and their checkpoints |
 | `data/gurobi_logs.tar.gz` | 0.09 MB | `gurobi_logs/` | Table IV's Gurobi column, from the recorded solver logs |
-| `data/hardware_results.tar.gz` | 0.11 MB | `hardware/` | Table VII: the two-class QUBO, the Gurobi, Fujitsu and D-Wave solution vectors, and the authors' `Verify.ipynb`, `Verify_Gurobi.ipynb` and `SA_Verify.ipynb` |
+| `data/hardware_results.tar.gz` | 0.11 MB | `hardware/` | Table VIII: the two-class QUBO, the Gurobi, Fujitsu and D-Wave solution vectors, and the authors' `Verify.ipynb`, `Verify_Gurobi.ipynb` and `SA_Verify.ipynb` |
 | `data/datasets.tar.gz` | 5.07 MB | `Dataset/` | Table II's *Total Train Data* column, the structure group's training-set cross-check, and regenerating QUBOs from scratch with `QUBOCreator.py` |
+| `data/width_scaling.tar.gz` | 4.17 MB | `width_scaling/` | Table VI, the hidden-layer width table: the trained checkpoint, the `Info.txt`, the QUBO and training records, the Z3 records and the five stored annealing vectors for each of the twelve width cells |
 
-`verify_paper.py` unpacks **all four** itself, and `--no-extract` turns that off. To do it by hand:
+`verify_paper.py` unpacks **all five** itself, and `--no-extract` turns that off. To do it by hand:
 
 ```bash
 tar xzf data/qubo_and_networks.tar.gz
 tar xzf data/gurobi_logs.tar.gz
 tar xzf data/hardware_results.tar.gz
 tar xzf data/datasets.tar.gz
+tar xzf data/width_scaling.tar.gz
 ```
 
-They extract into the repository root at the paths every script already expects (`QUBO/7x7/...`, not `data/QUBO/7x7/...`). `QUBO/` and `Dataset/` expand to about 138 MB and 313 MB of dense text, which is why they ship compressed and why the expanded paths are git-ignored. The 5x5 files are tracked in the repository and are byte-identical to their copies in the archives, so extracting over them changes nothing and `git status` stays clean. `--quick` selects the 5x5 alone, whose QUBO, checkpoint and data set are all tracked, so it never unpacks either large archive.
+They extract into the repository root at the paths every script already expects (`QUBO/7x7/...`, not `data/QUBO/7x7/...`). `QUBO/` and `Dataset/` expand to about 138 MB and 313 MB of dense text, and `width_scaling/` to about 21 MB, which is why they ship compressed and why the expanded paths are git-ignored. The 5x5 files are tracked in the repository and are byte-identical to their copies in the archives, so extracting over them changes nothing and `git status` stays clean. `--quick` selects the 5x5 alone, whose QUBO, checkpoint and data set are all tracked, so it never unpacks either large archive.
 
 The three notebooks inside `hardware_results.tar.gz` are the authors' own artifacts, kept for provenance — they show what was actually run on the hardware, how the SA row was produced, and where the Gurobi row's solution vector came from. They are not the verification path: `verify_paper.py` does all of it, needs no Jupyter, and does not read them. Three edits were made across them, all recorded here. In `SA_Verify.ipynb` the SA import was `from neal import SimulatedAnnealingSampler`; `neal` was folded into `dwave-samplers`, which is what `requirements.txt` pins, so the line now reads `from dwave.samplers import SimulatedAnnealingSampler`. In `Verify_Gurobi.ipynb` the QUBO is opened by a bare filename, which only works from inside `hardware/QUBO/`, so the path now reads `QUBO/113-1273-28-15-zero-3-3-561020-H.pickle` like the other two notebooks; and its stored Gurobi banner had the license ID replaced with `<redacted>`, exactly as in the shipped solver logs. Every stored cell output is otherwise the authors' original, including the `state` vector that `hardware/Gurobi/` was built from and the `16.658` s runtime. Note that `Verify.ipynb` covers the Fujitsu sample only, despite extracting next to `hardware/Dwave/`: it reads the Fujitsu solution and timing from `hardware/Result/` and `hardware/Time/` and never opens the D-Wave DataFrame. The D-Wave sample is checked by `verify_paper.py` instead.
 
@@ -241,9 +247,44 @@ python linear_baseline.py --with-gurobi   # also Gurobi, which needs a license
 python bruteforce_5x5_energy.py
 ```
 
-`linear_baseline.py` solves the two-class instance in the linear constraint form the QUBO is built from. The pickle in `hardware/QUBO/` stores the instance twice — `["qubo"]` is the penalised form every solver in Table VII was given, and `["constraints"]` is the 64 equalities and the budget inequality it was built from, all 65 of them strictly linear — and nothing else in this repository ever built a model from the second. The script hands that system to Gurobi and to Z3, and also enumerates it exhaustively: only 15 of the 113 variables are free, since 94 are determined by the equalities and 4 are slack ancillas the penalisation adds, so all 2¹⁵ perturbation patterns can be completed and checked in a fraction of a second. The three methods agree on **30,826** feasible perturbations and `d_min = 4`, against the **10** pixels the archived Digital Annealer vector flips and the **7** the Gurobi vector flips. Since the objective `H_0` is identically zero, every feasible assignment carries the same energy and nothing in the QUBO prefers a smaller perturbation. **The runtimes are printed and never asserted**, here or in `verify_paper.py`: the paper's 0.0015 s, 0.034 s, 0.038 s and 0.042 s were measured on an Apple M1 Pro, and a reviewer's machine will differ. What this changes is the reading of Table VII's 168× figure: it is a speedup over solvers given the QUBO encoding, not over the best available method for this instance.
+`linear_baseline.py` solves the two-class instance in the linear constraint form the QUBO is built from. The pickle in `hardware/QUBO/` stores the instance twice — `["qubo"]` is the penalised form every solver in Table VIII was given, and `["constraints"]` is the 64 equalities and the budget inequality it was built from, all 65 of them strictly linear — and nothing else in this repository ever built a model from the second. The script hands that system to Gurobi and to Z3, and also enumerates it exhaustively: only 15 of the 113 variables are free, since 94 are determined by the equalities and 4 are slack ancillas the penalisation adds, so all 2¹⁵ perturbation patterns can be completed and checked in a fraction of a second. The three methods agree on **30,826** feasible perturbations and `d_min = 4`, against the **10** pixels the archived Digital Annealer vector flips and the **7** the Gurobi vector flips. Since the objective `H_0` is identically zero, every feasible assignment carries the same energy and nothing in the QUBO prefers a smaller perturbation. **The runtimes are printed and never asserted**, here or in `verify_paper.py`: the paper's 0.0015 s, 0.034 s, 0.038 s and 0.042 s were measured on an Apple M1 Pro, and a reviewer's machine will differ. What this changes is the reading of Table VIII's 168× figure: it is a speedup over solvers given the QUBO encoding, not over the best available method for this instance.
 
 `bruteforce_5x5_energy.py` is the experiment the response letter cites for the energy-equals-feasibility equivalence. It enumerates all **39,203** subsets of the 5x5 instance's 16 perturbable pixels that flip at most the budget of 8 — that is `C(16,0) + ... + C(16,8)` — completes each one through the 198 equalities, scores it against the shipped `QUBO_W.txt` minimised over the 7 slack ancillas, and compares that with `H.constraints` evaluated directly. Exactly the **8,773** perturbations that satisfy every encoded constraint reach the target energy of **−533**, and the other 30,430 do not, so the equivalence holds in both directions and neither is vacuous. The two sides come from different objects — the penalised matrix and the pre-penalty constraint polynomials — so an error in the penalisation could not make them agree by construction. It exits 0 if the equivalence holds everywhere and 1 if it does not.
+
+### The hidden-layer width sweep
+
+The four instances of Tables II to V vary the input dimension and hold the hidden layer at seven units. The revision adds a sweep along the other axis, in answer to Reviewer 2's first question: the input, the perturbable pixel set and the perturbation budget are held fixed and the single hidden layer is widened through **W = 7, 15, 31, 63, 127, 255**. A network is trained separately at each width, so these are not the networks of Table II and their accuracies are not the ones reported there. Each width is then verified twice — exactly with Z3, and heuristically with simulated annealing over five independent seeds at `SA.py`'s settings.
+
+There are two series, and **they are not of equal standing**.
+
+* **The 31-input (5x5) series is the publication-grade one, and it is the one the manuscript tabulates.** Every width was trained for the full **1,000 epochs**, and all five annealing seeds at every width ran the full **2,048 reads** with `truncated_to_fit_budget` false everywhere. Its numbers are measurements.
+* **The 1023-input (28x28) series is corroboration only, and no manuscript number rests on it.** It was trained for **250 epochs**, and from `W = 31` upwards the one-hour-per-seed wall-clock cap truncated the read count — to 85 reads at `W = 31`, and to as few as **9 of 2,048 reads** at `W = 255`. A truncated cell reports the best energy found within the reads it actually ran, so **those cells are bounds on what the full configuration would reach, not measurements of it**. The shipped records say so per seed, in `truncated_to_fit_budget` and `executed_reads`, and `verify_paper.py` checks that the flag and the read count agree and prints `BOUND, not a measurement` next to the truncated ones.
+
+**What ships.** `data/width_scaling.tar.gz` (4.17 MB, expanding to about 21 MB in `width_scaling/`) carries, for each of the twelve width cells: the trained checkpoint `model.pth`, the `Info.txt` describing the verified instance, `training.json`, `qubo.json` and `qubo_vars.json`, the Z3 record `z3.json`, and the five annealing records `sa_seed{1..5}.json` with their best solution vectors `sa_seed{1..5}_best.npy`. The calibration probe that preceded each run ships too, as `sa_calib_seed1.*`.
+
+Two artifacts of the original run are deliberately **not** shipped: the sparse QUBO `qubo.npz` and the pickled `pcbo.pkl`, which together came to 319 MB, all but 6 MB of it pickles. Both are regenerable from the checkpoint and the `Info.txt` — and are in fact regenerated, every run, by the check below — so shipping them would have multiplied the payload by about sixteen for nothing. The only path string edited anywhere in the records is `z3.json`'s `info_path` and `checkpoint_path`, which recorded the absolute paths of the machine the sweep ran on and now read `width_scaling/…`; every value is as the run produced it.
+
+**How to re-check it without re-running anything.** `python verify_paper.py` does it, by default, as part of the run at the top of this file. For each width it rebuilds the QUBO from the shipped checkpoint with the repository's own `bnn_as_qubo.setup_optim_model`, confirms the recorded variable and term counts against it, re-scores each of the five stored annealing vectors against that freshly built matrix, and confirms the recorded `best_energy` and `gap_to_target` to the unit. This is the same technique the Table IV FEM column is verified with, and it is exact rather than statistical: a recorded energy the rebuilt QUBO does not reproduce is a `FAIL`, not a near miss. Z3 is genuinely re-run at every width, both at the budget and as a minimum-distance scan. Wall-clock figures — the table's *Z3 Runtime* and *SA Median Time* columns — are printed and never asserted, as everywhere else in this report. The 31-input series adds about **60 seconds**; `--with-width-1023` adds the other series, about **half an hour** and up to 4.6 GB of RAM. Z3 is re-run under the same 1,800 s bound the sweep itself used, and at the widest 1023-input cell a slower machine than the one the records came from can exceed it — reported as `TIMEOUT`, never as `FAIL`, and the minimum-distance scan for that series is reported from the record rather than re-run at all, because two of its six widths returned `UNKNOWN` originally.
+
+**What a full re-run costs, and why nothing here attempts one.** This is the same kind of exception as the three repeated-annealing columns that `SA_repeated.py` produces: a longer experiment that `verify_paper.py` does not invoke, with the difference that here the *results* are checked in full and only the *search* is not repeated. Re-running the sweep from scratch is:
+
+| Series | Total | Of which annealing | Annealing at `W = 255` | Peak RSS while encoding `W = 255` |
+| --- | --- | --- | --- | --- |
+| 31-input (`--input-size 5`) | ~67 CPU-hours | ~66 CPU-hours | 8.9 h per seed, untruncated | 0.7 GB |
+| 1023-input (`--input-size 28`) | ~77 CPU-hours | ~74 CPU-hours | 1 h per seed, cut to 9 reads by the cap | 4.6 GB |
+
+The single `W = 255` seed that took 8.9 h had projected 15.4 h from its own four-read calibration probe before it started. No verification pass can afford that, which is exactly why the stored vectors ship.
+
+The script that produced the records is `width_scaling_sweep.py`, cleaned up to run anywhere — no absolute paths, no job queue, no assumption about the core count:
+
+```bash
+python width_scaling_sweep.py sweep --input-size 5     # the 31-input series
+python width_scaling_sweep.py sweep --input-size 28    # the 1023-input series
+```
+
+`sweep` runs every stage in order in a single process. Each stage is also its own subcommand (`train`, `instances`, `qubo`, `z3`, `sa`, `validate`), so one width or one seed can be re-run alone, and the whole thing is embarrassingly parallel across widths and seeds — which is how the shipped run was actually produced, one process per cell. That orchestration was specific to the machine it ran on and is not part of this repository. Output goes to `width_scaling_rerun/` by default, which is git-ignored, so a re-run never overwrites the shipped records in `width_scaling/`.
+
+One methodological note. `QUBOCreator.py` verifies the first training image the network classifies correctly, which at different widths would be a different image and would confound the comparison. `width_scaling_sweep.py instances` instead picks the first image that **every** width in the sweep classifies correctly, so the width is the only variable across a series; the choice is recorded in `width_scaling/<series>/instance.json`.
 
 ---
 
@@ -265,7 +306,7 @@ The goal of this codebase is to demonstrate that BNN robustness-verification pro
 python -m pip install -r requirements.txt
 ```
 
-Note that `requirements.txt` pins CPU builds of PyTorch and TorchVision. On a machine with a GPU, install the PyTorch build matching your CUDA or ROCm version instead. `pandas` is in the list even though no script imports it by name: the archived D-Wave sample used for Table VII is a pickled DataFrame, so unpickling it needs pandas installed. `gurobipy` is deliberately not in the list, because installing it does not provide the license it also needs.
+Note that `requirements.txt` pins CPU builds of PyTorch and TorchVision. On a machine with a GPU, install the PyTorch build matching your CUDA or ROCm version instead. `pandas` is in the list even though no script imports it by name: the archived D-Wave sample used for Table VIII is a pickled DataFrame, so unpickling it needs pandas installed. `gurobipy` is deliberately not in the list, because installing it does not provide the license it also needs.
 
 To install by hand instead, the following Python packages cover the experiments:
 
@@ -766,9 +807,20 @@ python SA_repeated.py
 
 This script performs multiple independent simulated-annealing runs to assess the stability of the obtained solutions across different runs and solver configurations.
 
+## Hidden-Layer Width Scaling
+
+The width sweep behind the revision's width-scaling table is regenerated by `width_scaling_sweep.py`:
+
+```bash
+python width_scaling_sweep.py sweep --input-size 5     # 31 inputs, ~67 CPU-hours
+python width_scaling_sweep.py sweep --input-size 28    # 1023 inputs, ~77 CPU-hours
+```
+
+Unlike the rest of this section, that is not something you need to run: the records the sweep produced ship in `data/width_scaling.tar.gz` and `verify_paper.py` re-checks them by default. See *The hidden-layer width sweep* near the top of this file for what ships, which of the two series is publication-grade and which is corroboration, and how the reported values are re-checked without repeating the search.
+
 ## Configuring the Experiments
 
-All parameters are plain module-level constants; there is no configuration file. Most scripts declare them near the top, `Z3.py` in a `USER CONFIGURATION` block near the bottom. The only command-line arguments anywhere are the optional `check` / `bruteforce` subcommands of `verify_counterexamples.py`. The table below lists where each configurable quantity actually lives.
+All parameters are plain module-level constants; there is no configuration file. Most scripts declare them near the top, `Z3.py` in a `USER CONFIGURATION` block near the bottom. The command-line arguments anywhere are the optional `check` / `bruteforce` subcommands of `verify_counterexamples.py`, and the subcommands and flags of `width_scaling_sweep.py`, which is the one script here that takes its configuration entirely from the command line. The table below lists where each configurable quantity actually lives.
 
 | What you want to change | File | Variable |
 | --- | --- | --- |
@@ -805,6 +857,7 @@ All parameters are plain module-level constants; there is no configuration file.
 | Z3 epsilon, overriding `Info.txt` | `Z3.py` | `SINGLE_EPSILON_OVERRIDE` |
 | Z3 distance-scan range | `Z3.py` | `SCAN_START_EPSILON`, `SCAN_MAX_EPSILON` |
 | Brute-force enumeration budget | `verify_counterexamples.py` | `MAX_COMBINATIONS_PER_LEVEL` |
+| Hidden widths, seeds and read budget of the width sweep | `width_scaling_sweep.py` | `--widths`, `--seeds`, `--reads`, `--budget-seconds`; the defaults are in `WIDTHS`, `SEEDS` and `SERIES_DEFAULTS` |
 
 The image size is the one parameter that must be changed consistently across scripts: `DatasetCreation.py` uses a literal `InputSize = 5`, while the other scripts index into `Sizes = [5, 7, 11, 28]`, so `Sizes[0]` selects 5x5, `Sizes[1]` selects 7x7, and so on. The derived data dimension (`31`, `63`, `127`, `1023`) and all folder paths follow automatically.
 
@@ -918,7 +971,7 @@ The archival DOI has not been minted yet. `.zenodo.json` and `CITATION.cff` hold
 
 **These terms are provisional until a release is tagged.** MIT and CC BY 4.0 are the intended licences and are what the repository is offered under today, but they are still pending written confirmation by all three authors and by their institution: the authors are UCSB-affiliated and the work is funded by NSF 2311295 and DOE DE-SC0021323, so the copyright holder line in `LICENSE` is being confirmed as well. Nothing above is settled enough to rely on for a permanent record — treat the grant as final only once this repository carries a tagged release, because the licence files inside an archived snapshot cannot be changed afterwards.
 
-"Data" means `Dataset/`, `QUBO/`, `TrainedNN/`, `FEM_best_configurations.txt`, `FEM_HYPERPARAMETERS.md` and the four archives in `data/` — the binarized MNIST subsets, the QUBO instances, the trained checkpoints, the recorded Gurobi logs and the Gurobi, Fujitsu and D-Wave samples. Everything executable is MIT, including the three notebooks that ship inside `data/hardware_results.tar.gz`.
+"Data" means `Dataset/`, `QUBO/`, `TrainedNN/`, `FEM_best_configurations.txt`, `FEM_HYPERPARAMETERS.md` and the five archives in `data/` — the binarized MNIST subsets, the QUBO instances, the trained checkpoints, the recorded Gurobi logs, the Gurobi, Fujitsu and D-Wave samples, and the hidden-layer width sweep's checkpoints, records and solution vectors. Everything executable is MIT, including the three notebooks that ship inside `data/hardware_results.tar.gz`.
 
 Two licences rather than one because MIT is written for software and reads badly over a directory of `.txt` matrices, and because the conventional split for a code-plus-data release is a permissive software licence next to a Creative Commons data licence. Creative Commons itself recommends against putting CC licences on code, and Springer Nature's own licence chooser offers exactly this pairing. Neither licence is more restrictive than the other in practice: both permit commercial use, modification and redistribution, and both ask only for attribution.
 
